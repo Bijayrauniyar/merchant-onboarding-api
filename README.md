@@ -50,7 +50,7 @@ SALES staff create and submit merchant applications. Submitting triggers an asyn
 - [x] System Architecture Specification (`DESIGN.md`)
 - [x] AI Governance & Engineering Guardrails (`AGENTS.md`)
 - [x] **Slice 1: Scaffolding & Infrastructure** (Docker Compose, NestJS core, ConfigModule, Swagger `/api/docs`, `/health`)
-- [ ] **Slice 2: Database Layer & Audit Module** (TypeORM migrations, `synchronize: false`, redaction utility, `AuditLog`)
+- [x] **Slice 2: Database Layer & Audit Module** (TypeORM migrations, `synchronize: false`, redaction utility, `AuditLog`, `HttpExceptionFilter`, `LoggingInterceptor`)
 - [ ] **Slice 3: Authentication & User Seeding** (JWT strategy, bcrypt, seed 5 users, `POST /auth/login`, route guards)
 - [ ] **Slice 4: Applications & Query Scoping** (`MerchantApplication` CRUD, Anti-IDOR scoping `createdById`, 404 tests)
 - [ ] **Slice 5: State Machine & Lifecycle** (Pure `canTransition()` validator, submit, assign, decision gating, 409 tests)

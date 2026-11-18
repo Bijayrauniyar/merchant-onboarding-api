@@ -3,7 +3,6 @@
 > **Status:** `COMPLETED`  
 > **Target Commit:** `chore(infra): scaffold nestjs project with docker compose and typeorm`  
 > **Relevant Architecture Sections:** [DESIGN.md Section 1 & 1.1](../DESIGN.md#1-system-overview--scope-boundary), [AGENTS.md Section 2 & 5](../AGENTS.md#2-system-architecture--boundaries)  
-> **Interview Prep Companion:** [.private/interview-prep/01_scaffolding_infra.md](../.private/interview-prep/01_scaffolding_infra.md)
 
 ---
 
@@ -164,7 +163,6 @@ merchant-onboarding-api/
 - [x] `GET /health` endpoint implemented and unit tested (`PASS src/modules/health/health.controller.spec.ts`).
 - [x] Global `ValidationPipe` with whitelist and forbidNonWhitelisted configured in `src/main.ts`.
 - [x] Graceful shutdown hooks enabled (`app.enableShutdownHooks()`).
-- [x] `.private/interview-prep/01_scaffolding_infra.md` updated with exact verified code snippets and test logs.
 - [x] `README.md` checklist marks Slice 1 as completed.
 
 ---
@@ -175,5 +173,5 @@ Once this specification is reviewed and approved:
 1. Update status to `IN_PROGRESS`.
 2. Generate all Slice 1 files.
 3. Run verification tests.
-4. Update interview prep doc and README checklist.
+4. Update README checklist.
 5. Provide Git commit command: `chore(infra): scaffold nestjs project with docker compose and typeorm`.

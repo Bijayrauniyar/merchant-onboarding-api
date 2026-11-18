@@ -3,6 +3,8 @@ import { ValidationPipe, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
+import { HttpExceptionFilter } from './common/filters/http-exception.filter';
+import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 
 async function bootstrap() {
   const logger = new Logger('Bootstrap');
@@ -13,6 +15,12 @@ async function bootstrap() {
 
   // Enable graceful shutdown hooks for clean process termination
   app.enableShutdownHooks();
+
+  // Global exception filter for centralized error handling and sanitization
+  app.useGlobalFilters(new HttpExceptionFilter());
+
+  // Global logging interceptor for latency and HTTP access logging
+  app.useGlobalInterceptors(new LoggingInterceptor());
 
   // Global validation pipe with strict whitelist enforcement (Anti-Mass Assignment)
   app.useGlobalPipes(

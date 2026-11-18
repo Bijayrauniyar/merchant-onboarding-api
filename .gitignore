@@ -35,5 +35,5 @@ Thumbs.db
 .vscode/*
 !.vscode/extensions.json
 
-# Private, local-only
-.private/
+# Local development & overrides
+.local/

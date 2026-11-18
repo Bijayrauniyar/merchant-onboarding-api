@@ -111,4 +111,4 @@ Every code increment must be accompanied by automated tests:
 
 1. **No Committed Secrets**: Never commit `.env`, private keys, passwords, or production connection strings. Keep [.env.example](./.env.example) up to date with placeholder values.
 2. **Synthetic Data Only**: All seed scripts and test payloads must use fictional merchant and personal data.
-3. **Code Explanability**: Do not introduce obscure design patterns, complex metaprogramming, or unnecessary npm packages that cannot be easily justified and explained in a code review interview.
+3. **Code Explanability**: Do not introduce obscure design patterns, complex metaprogramming, or unnecessary npm packages that cannot be easily justified and explained in a rigorous engineering code review.
