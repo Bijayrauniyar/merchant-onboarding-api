@@ -49,19 +49,46 @@ SALES staff create and submit merchant applications. Submitting triggers an asyn
 
 - [x] System Architecture Specification (`DESIGN.md`)
 - [x] AI Governance & Engineering Guardrails (`AGENTS.md`)
-- [ ] **Slice 1: Scaffolding & Infrastructure** (Docker Compose, NestJS core, ConfigModule, `/health`)
+- [x] **Slice 1: Scaffolding & Infrastructure** (Docker Compose, NestJS core, ConfigModule, Swagger `/api/docs`, `/health`)
 - [ ] **Slice 2: Database Layer & Audit Module** (TypeORM migrations, `synchronize: false`, redaction utility, `AuditLog`)
 - [ ] **Slice 3: Authentication & User Seeding** (JWT strategy, bcrypt, seed 5 users, `POST /auth/login`, route guards)
 - [ ] **Slice 4: Applications & Query Scoping** (`MerchantApplication` CRUD, Anti-IDOR scoping `createdById`, 404 tests)
 - [ ] **Slice 5: State Machine & Lifecycle** (Pure `canTransition()` validator, submit, assign, decision gating, 409 tests)
 - [ ] **Slice 6: Asynchronous Risk Review** (BullMQ + Redis, post-commit dispatch, 3-layer idempotency, 3x backoff retries)
-- [ ] **Slice 7: Swagger Docs & Final Verification** (OpenAPI `/api/docs`, full test suite pass, zero-secrets audit)
+- [ ] **Slice 7: Production Hardening & Final Verification** (Centralized exception filters, full test suite pass, zero-secrets audit)
 
 ---
 
 ## Getting Started
 
-_Step-by-step local execution instructions will be added upon completing Slice 1 (Project Scaffolding & Docker Compose)._
+### Local Setup & Health Verification
+
+```bash
+# 1. Environment configuration
+cp .env.example .env
+
+# 2. Start PostgreSQL 16 and Redis 7 containers
+docker compose up -d
+
+# 3. Install dependencies
+npm install
+
+# 4. Build application (strict TypeScript compilation)
+npm run build
+
+# 5. Run unit tests
+npm test
+
+# 6. Start the development server
+npm run start:dev
+
+# 7. Check service health
+curl http://localhost:3000/health
+# Response: {"status":"ok","timestamp":"...","uptime":...}
+
+# 8. Interactive Swagger documentation
+# Open in browser: http://localhost:3000/api/docs
+```
 
 ---
 
