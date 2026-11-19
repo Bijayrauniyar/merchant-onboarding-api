@@ -25,6 +25,7 @@ import {
   isEditable,
 } from './state-machine/applications.state-machine';
 import { AuditService } from '../audit/audit.service';
+import { RiskProducer } from '../risk/risk.producer';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
 import { UserRole } from '../users/enums/user-role.enum';
 
@@ -40,6 +41,7 @@ export class ApplicationsService {
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
     private readonly auditService: AuditService,
+    private readonly riskProducer: RiskProducer,
     private readonly dataSource: DataSource,
   ) {}
 
@@ -245,7 +247,7 @@ export class ApplicationsService {
     const previousStatus = application.status;
     const nextStatus = getNextStatus(application.status, action);
 
-    return this.dataSource.transaction(async (manager) => {
+    const submitted = await this.dataSource.transaction(async (manager) => {
       application.status = nextStatus;
       application.riskStatus = RiskStatus.PENDING;
       application.submissionVersion += 1;
@@ -271,6 +273,14 @@ export class ApplicationsService {
 
       return saved;
     });
+
+    // Post-Commit Enqueueing: job is dispatched strictly AFTER database commit
+    await this.riskProducer.enqueueRiskReview(
+      submitted.id,
+      submitted.submissionVersion,
+    );
+
+    return submitted;
   }
 
   /**

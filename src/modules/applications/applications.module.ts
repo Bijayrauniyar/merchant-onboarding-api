@@ -5,11 +5,13 @@ import { User } from '../users/entities/user.entity';
 import { ApplicationsService } from './applications.service';
 import { ApplicationsController } from './applications.controller';
 import { AuditModule } from '../audit/audit.module';
+import { RiskModule } from '../risk/risk.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([MerchantApplication, User]),
     AuditModule,
+    RiskModule,
   ],
   controllers: [ApplicationsController],
   providers: [ApplicationsService],

@@ -11,6 +11,7 @@ import { ApplicationsService } from './applications.service';
 import { MerchantApplication } from './entities/merchant-application.entity';
 import { User } from '../users/entities/user.entity';
 import { AuditService } from '../audit/audit.service';
+import { RiskProducer } from '../risk/risk.producer';
 import { ApplicationStatus } from './enums/application-status.enum';
 import { RiskStatus } from './enums/risk-status.enum';
 import { BusinessType } from './enums/business-type.enum';
@@ -23,6 +24,7 @@ describe('ApplicationsService', () => {
   let applicationRepository: jest.Mocked<Repository<MerchantApplication>>;
   let userRepository: jest.Mocked<Repository<User>>;
   let auditService: jest.Mocked<AuditService>;
+  let riskProducer: jest.Mocked<RiskProducer>;
   let dataSource: jest.Mocked<DataSource>;
 
   const salesUser: AuthenticatedUser = {
@@ -92,6 +94,10 @@ describe('ApplicationsService', () => {
       log: jest.fn().mockResolvedValue({} as any),
     };
 
+    const mockRiskProducer = {
+      enqueueRiskReview: jest.fn().mockResolvedValue(undefined),
+    };
+
     const mockDataSource = {
       transaction: jest.fn(async (cb: (manager: any) => Promise<any>) => {
         const mockManager = {
@@ -118,6 +124,10 @@ describe('ApplicationsService', () => {
           useValue: mockAuditService,
         },
         {
+          provide: RiskProducer,
+          useValue: mockRiskProducer,
+        },
+        {
           provide: DataSource,
           useValue: mockDataSource,
         },
@@ -128,6 +138,7 @@ describe('ApplicationsService', () => {
     applicationRepository = module.get(getRepositoryToken(MerchantApplication));
     userRepository = module.get(getRepositoryToken(User));
     auditService = module.get(AuditService);
+    riskProducer = module.get(RiskProducer);
     dataSource = module.get(DataSource);
   });
 
@@ -351,6 +362,7 @@ describe('ApplicationsService', () => {
       expect(result.riskStatus).toBe(RiskStatus.PENDING);
       expect(result.submissionVersion).toBe(1);
       expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+      expect(riskProducer.enqueueRiskReview).toHaveBeenCalledWith('app-123', 1);
       expect(auditService.log).toHaveBeenCalledWith(
         expect.objectContaining({
           action: 'APPLICATION_SUBMITTED',
@@ -380,6 +392,38 @@ describe('ApplicationsService', () => {
       expect(result.status).toBe(ApplicationStatus.SUBMITTED);
       expect(result.riskStatus).toBe(RiskStatus.PENDING);
       expect(result.submissionVersion).toBe(2);
+      expect(riskProducer.enqueueRiskReview).toHaveBeenCalledWith('app-123', 2);
+    });
+
+    it('should dispatch risk review job strictly post-commit after transaction resolves', async () => {
+      mockQueryBuilder.getOne.mockResolvedValue({
+        ...mockApplication,
+        status: ApplicationStatus.DRAFT,
+        submissionVersion: 0,
+        riskStatus: RiskStatus.NOT_STARTED,
+      });
+
+      const executionOrder: string[] = [];
+      dataSource.transaction.mockImplementation(async (cb: any) => {
+        executionOrder.push('transaction_begin');
+        const res = await cb({
+          save: jest.fn().mockImplementation((_, entity) => entity),
+        });
+        executionOrder.push('transaction_committed');
+        return res;
+      });
+
+      riskProducer.enqueueRiskReview.mockImplementation(async () => {
+        executionOrder.push('job_enqueued');
+      });
+
+      await service.submit('app-123', salesUser);
+
+      expect(executionOrder).toEqual([
+        'transaction_begin',
+        'transaction_committed',
+        'job_enqueued',
+      ]);
     });
 
     it('should throw ConflictException (409) when attempting to submit an already SUBMITTED application', async () => {
