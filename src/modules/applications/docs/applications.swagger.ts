@@ -142,3 +142,136 @@ export function ApiUpdateApplicationDoc() {
     }),
   );
 }
+
+/**
+ * Endpoint-level Swagger documentation for POST /applications/:id/submit.
+ */
+export function ApiSubmitApplicationDoc() {
+  return applyDecorators(
+    ApiOperation({
+      summary: 'Submit merchant application for risk review',
+      description:
+        'Transitions application from DRAFT or INFO_REQUESTED to SUBMITTED. Increments submissionVersion and marks riskStatus as PENDING. Scoped by ownership for SALES.',
+    }),
+    ApiParam({
+      name: 'id',
+      type: 'string',
+      format: 'uuid',
+      description: 'Unique application identifier (UUID v4)',
+    }),
+    ApiResponse({
+      status: 200,
+      description: 'Application successfully submitted for review',
+      type: MerchantApplication,
+    }),
+    ApiResponse({
+      status: 401,
+      description: 'Unauthorized: Missing or invalid JWT access token',
+    }),
+    ApiResponse({
+      status: 404,
+      description:
+        'Not Found: Application not found or caller lacks ownership scope (Anti-Enumeration)',
+    }),
+    ApiResponse({
+      status: 409,
+      description:
+        'Conflict: Application cannot be submitted in current lifecycle status',
+    }),
+  );
+}
+
+/**
+ * Endpoint-level Swagger documentation for POST /applications/:id/assign.
+ */
+export function ApiAssignReviewerDoc() {
+  return applyDecorators(
+    ApiOperation({
+      summary: 'Assign a reviewer to a submitted application',
+      description:
+        'Restricted to ADMIN role. Requires application to be in SUBMITTED status and target user to hold REVIEWER role.',
+    }),
+    ApiParam({
+      name: 'id',
+      type: 'string',
+      format: 'uuid',
+      description: 'Unique application identifier (UUID v4)',
+    }),
+    ApiResponse({
+      status: 200,
+      description: 'Reviewer successfully assigned to application',
+      type: MerchantApplication,
+    }),
+    ApiResponse({
+      status: 400,
+      description:
+        'Bad Request: Target user not found or does not hold REVIEWER role',
+    }),
+    ApiResponse({
+      status: 401,
+      description: 'Unauthorized: Missing or invalid JWT access token',
+    }),
+    ApiResponse({
+      status: 403,
+      description:
+        'Forbidden: Caller lacks ADMIN role required for reviewer assignment',
+    }),
+    ApiResponse({
+      status: 404,
+      description: 'Not Found: Application not found',
+    }),
+    ApiResponse({
+      status: 409,
+      description:
+        'Conflict: Application must be in SUBMITTED status to assign a reviewer',
+    }),
+  );
+}
+
+/**
+ * Endpoint-level Swagger documentation for POST /applications/:id/decision.
+ */
+export function ApiRecordDecisionDoc() {
+  return applyDecorators(
+    ApiOperation({
+      summary: 'Record official reviewer decision on an assigned application',
+      description:
+        'Restricted to the assigned REVIEWER. Decisions: APPROVE, REJECT (mandatory note), REQUEST_INFO (mandatory note). Strictly blocked with 409 Conflict if automated risk check is PENDING.',
+    }),
+    ApiParam({
+      name: 'id',
+      type: 'string',
+      format: 'uuid',
+      description: 'Unique application identifier (UUID v4)',
+    }),
+    ApiResponse({
+      status: 200,
+      description: 'Reviewer decision successfully recorded and applied',
+      type: MerchantApplication,
+    }),
+    ApiResponse({
+      status: 400,
+      description:
+        'Bad Request: Note is mandatory for REJECT and REQUEST_INFO decisions',
+    }),
+    ApiResponse({
+      status: 401,
+      description: 'Unauthorized: Missing or invalid JWT access token',
+    }),
+    ApiResponse({
+      status: 403,
+      description:
+        'Forbidden: Caller role cannot record reviewer decisions (SALES and ADMIN barred)',
+    }),
+    ApiResponse({
+      status: 404,
+      description:
+        'Not Found: Application not found or not assigned to the calling reviewer',
+    }),
+    ApiResponse({
+      status: 409,
+      description:
+        'Conflict: Automated risk check is PENDING or application not in SUBMITTED status',
+    }),
+  );
+}

@@ -5,19 +5,23 @@ import {
   NotFoundException,
   ConflictException,
   ForbiddenException,
+  BadRequestException,
 } from '@nestjs/common';
 import { ApplicationsService } from './applications.service';
 import { MerchantApplication } from './entities/merchant-application.entity';
+import { User } from '../users/entities/user.entity';
 import { AuditService } from '../audit/audit.service';
 import { ApplicationStatus } from './enums/application-status.enum';
 import { RiskStatus } from './enums/risk-status.enum';
 import { BusinessType } from './enums/business-type.enum';
 import { UserRole } from '../users/enums/user-role.enum';
+import { ReviewerDecision } from './enums/reviewer-decision.enum';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
 
 describe('ApplicationsService', () => {
   let service: ApplicationsService;
   let applicationRepository: jest.Mocked<Repository<MerchantApplication>>;
+  let userRepository: jest.Mocked<Repository<User>>;
   let auditService: jest.Mocked<AuditService>;
   let dataSource: jest.Mocked<DataSource>;
 
@@ -80,6 +84,10 @@ describe('ApplicationsService', () => {
       create: jest.fn(),
     };
 
+    const mockUserRepo = {
+      findOne: jest.fn(),
+    };
+
     const mockAuditService = {
       log: jest.fn().mockResolvedValue({} as any),
     };
@@ -102,6 +110,10 @@ describe('ApplicationsService', () => {
           useValue: mockRepo,
         },
         {
+          provide: getRepositoryToken(User),
+          useValue: mockUserRepo,
+        },
+        {
           provide: AuditService,
           useValue: mockAuditService,
         },
@@ -114,6 +126,7 @@ describe('ApplicationsService', () => {
 
     service = module.get<ApplicationsService>(ApplicationsService);
     applicationRepository = module.get(getRepositoryToken(MerchantApplication));
+    userRepository = module.get(getRepositoryToken(User));
     auditService = module.get(AuditService);
     dataSource = module.get(DataSource);
   });
@@ -320,6 +333,358 @@ describe('ApplicationsService', () => {
 
       expect(result).toEqual(mockApplication);
       expect(dataSource.transaction).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('submit()', () => {
+    it('should submit an application in DRAFT status, set riskStatus to PENDING, increment version and record audit log', async () => {
+      mockQueryBuilder.getOne.mockResolvedValue({
+        ...mockApplication,
+        status: ApplicationStatus.DRAFT,
+        submissionVersion: 0,
+        riskStatus: RiskStatus.NOT_STARTED,
+      });
+
+      const result = await service.submit('app-123', salesUser);
+
+      expect(result.status).toBe(ApplicationStatus.SUBMITTED);
+      expect(result.riskStatus).toBe(RiskStatus.PENDING);
+      expect(result.submissionVersion).toBe(1);
+      expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+      expect(auditService.log).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'APPLICATION_SUBMITTED',
+          entityId: 'app-123',
+          actorId: salesUser.id,
+          metadata: expect.objectContaining({
+            previousStatus: ApplicationStatus.DRAFT,
+            newStatus: ApplicationStatus.SUBMITTED,
+            riskStatus: RiskStatus.PENDING,
+            submissionVersion: 1,
+          }),
+        }),
+        expect.anything(),
+      );
+    });
+
+    it('should resubmit an application in INFO_REQUESTED status and increment submissionVersion', async () => {
+      mockQueryBuilder.getOne.mockResolvedValue({
+        ...mockApplication,
+        status: ApplicationStatus.INFO_REQUESTED,
+        submissionVersion: 1,
+        riskStatus: RiskStatus.PASSED,
+      });
+
+      const result = await service.submit('app-123', salesUser);
+
+      expect(result.status).toBe(ApplicationStatus.SUBMITTED);
+      expect(result.riskStatus).toBe(RiskStatus.PENDING);
+      expect(result.submissionVersion).toBe(2);
+    });
+
+    it('should throw ConflictException (409) when attempting to submit an already SUBMITTED application', async () => {
+      mockQueryBuilder.getOne.mockResolvedValue({
+        ...mockApplication,
+        status: ApplicationStatus.SUBMITTED,
+      });
+
+      await expect(service.submit('app-123', salesUser)).rejects.toThrow(
+        ConflictException,
+      );
+    });
+
+    it('should throw ConflictException (409) when attempting to submit an APPROVED or REJECTED application', async () => {
+      mockQueryBuilder.getOne.mockResolvedValue({
+        ...mockApplication,
+        status: ApplicationStatus.APPROVED,
+      });
+
+      await expect(service.submit('app-123', salesUser)).rejects.toThrow(
+        ConflictException,
+      );
+    });
+
+    it('should throw NotFoundException (404) when submitting an application outside caller scope', async () => {
+      mockQueryBuilder.getOne.mockResolvedValue(null);
+
+      await expect(service.submit('app-foreign', salesUser)).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+  });
+
+  describe('assignReviewer()', () => {
+    const validReviewerId = 'reviewer-uuid-1';
+    const mockReviewerUser = {
+      id: validReviewerId,
+      email: 'reviewer1@example.com',
+      role: UserRole.REVIEWER,
+    } as User;
+
+    it('should assign a qualified reviewer to a SUBMITTED application and record audit log', async () => {
+      mockQueryBuilder.getOne.mockResolvedValue({
+        ...mockApplication,
+        status: ApplicationStatus.SUBMITTED,
+        assignedReviewerId: null,
+      });
+
+      userRepository.findOne.mockResolvedValue(mockReviewerUser);
+
+      const result = await service.assignReviewer(
+        'app-123',
+        { reviewerId: validReviewerId },
+        adminUser,
+      );
+
+      expect(result.assignedReviewerId).toBe(validReviewerId);
+      expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+      expect(auditService.log).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'REVIEWER_ASSIGNED',
+          entityId: 'app-123',
+          actorId: adminUser.id,
+          metadata: expect.objectContaining({
+            reviewerId: validReviewerId,
+            reviewerEmail: 'reviewer1@example.com',
+            previousReviewerId: null,
+          }),
+        }),
+        expect.anything(),
+      );
+    });
+
+    it('should throw ForbiddenException (403) when non-admin attempts assignment', async () => {
+      await expect(
+        service.assignReviewer(
+          'app-123',
+          { reviewerId: validReviewerId },
+          salesUser,
+        ),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('should throw ConflictException (409) when application is not in SUBMITTED status', async () => {
+      mockQueryBuilder.getOne.mockResolvedValue({
+        ...mockApplication,
+        status: ApplicationStatus.DRAFT,
+      });
+
+      await expect(
+        service.assignReviewer(
+          'app-123',
+          { reviewerId: validReviewerId },
+          adminUser,
+        ),
+      ).rejects.toThrow(ConflictException);
+    });
+
+    it('should throw BadRequestException (400) when target user does not exist', async () => {
+      mockQueryBuilder.getOne.mockResolvedValue({
+        ...mockApplication,
+        status: ApplicationStatus.SUBMITTED,
+      });
+
+      userRepository.findOne.mockResolvedValue(null);
+
+      await expect(
+        service.assignReviewer(
+          'app-123',
+          { reviewerId: 'nonexistent-user' },
+          adminUser,
+        ),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('should throw BadRequestException (400) when target user does not hold REVIEWER role', async () => {
+      mockQueryBuilder.getOne.mockResolvedValue({
+        ...mockApplication,
+        status: ApplicationStatus.SUBMITTED,
+      });
+
+      userRepository.findOne.mockResolvedValue({
+        id: 'sales-user-id',
+        email: 'sales@example.com',
+        role: UserRole.SALES,
+      } as User);
+
+      await expect(
+        service.assignReviewer(
+          'app-123',
+          { reviewerId: 'sales-user-id' },
+          adminUser,
+        ),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('should throw NotFoundException (404) when target application does not exist', async () => {
+      mockQueryBuilder.getOne.mockResolvedValue(null);
+
+      await expect(
+        service.assignReviewer(
+          'app-nonexistent',
+          { reviewerId: validReviewerId },
+          adminUser,
+        ),
+      ).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe('recordDecision()', () => {
+    const assignedApp: MerchantApplication = {
+      ...mockApplication,
+      status: ApplicationStatus.SUBMITTED,
+      riskStatus: RiskStatus.PASSED,
+      submissionVersion: 1,
+      assignedReviewerId: reviewerUser.id,
+    };
+
+    it('should successfully approve an application and set status to APPROVED with decidedAt timestamp', async () => {
+      mockQueryBuilder.getOne.mockResolvedValue({ ...assignedApp });
+
+      const result = await service.recordDecision(
+        'app-123',
+        { decision: ReviewerDecision.APPROVE, note: 'All compliance checks passed' },
+        reviewerUser,
+      );
+
+      expect(result.status).toBe(ApplicationStatus.APPROVED);
+      expect(result.decisionNote).toBe('All compliance checks passed');
+      expect(result.decidedAt).toBeInstanceOf(Date);
+      expect(auditService.log).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'DECISION_RECORDED',
+          entityId: 'app-123',
+          actorId: reviewerUser.id,
+          metadata: expect.objectContaining({
+            decision: ReviewerDecision.APPROVE,
+            previousStatus: ApplicationStatus.SUBMITTED,
+            newStatus: ApplicationStatus.APPROVED,
+          }),
+        }),
+        expect.anything(),
+      );
+    });
+
+    it('should successfully reject an application with mandatory note and set status to REJECTED', async () => {
+      mockQueryBuilder.getOne.mockResolvedValue({ ...assignedApp });
+
+      const result = await service.recordDecision(
+        'app-123',
+        {
+          decision: ReviewerDecision.REJECT,
+          note: 'High-risk business type in unsupported jurisdiction',
+        },
+        reviewerUser,
+      );
+
+      expect(result.status).toBe(ApplicationStatus.REJECTED);
+      expect(result.decisionNote).toBe(
+        'High-risk business type in unsupported jurisdiction',
+      );
+      expect(result.decidedAt).toBeInstanceOf(Date);
+    });
+
+    it('should successfully request info with mandatory note and set status to INFO_REQUESTED without decidedAt', async () => {
+      mockQueryBuilder.getOne.mockResolvedValue({ ...assignedApp });
+
+      const result = await service.recordDecision(
+        'app-123',
+        {
+          decision: ReviewerDecision.REQUEST_INFO,
+          note: 'Please provide updated utility bill for proof of address',
+        },
+        reviewerUser,
+      );
+
+      expect(result.status).toBe(ApplicationStatus.INFO_REQUESTED);
+      expect(result.decisionNote).toBe(
+        'Please provide updated utility bill for proof of address',
+      );
+      expect(result.decidedAt).toBeNull();
+    });
+
+    it('should strictly throw ConflictException (409) when riskStatus is PENDING (State Gating Invariant)', async () => {
+      mockQueryBuilder.getOne.mockResolvedValue({
+        ...assignedApp,
+        riskStatus: RiskStatus.PENDING,
+      });
+
+      await expect(
+        service.recordDecision(
+          'app-123',
+          { decision: ReviewerDecision.APPROVE },
+          reviewerUser,
+        ),
+      ).rejects.toThrow(ConflictException);
+    });
+
+    it('should throw ConflictException (409) when application is not in SUBMITTED status', async () => {
+      mockQueryBuilder.getOne.mockResolvedValue({
+        ...assignedApp,
+        status: ApplicationStatus.DRAFT,
+      });
+
+      await expect(
+        service.recordDecision(
+          'app-123',
+          { decision: ReviewerDecision.APPROVE },
+          reviewerUser,
+        ),
+      ).rejects.toThrow(ConflictException);
+    });
+
+    it('should throw NotFoundException (404) when application is not found or not assigned to calling reviewer', async () => {
+      mockQueryBuilder.getOne.mockResolvedValue(null);
+
+      await expect(
+        service.recordDecision(
+          'app-123',
+          { decision: ReviewerDecision.APPROVE },
+          reviewerUser,
+        ),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('should throw ForbiddenException (403) when non-reviewer attempts to record a decision', async () => {
+      await expect(
+        service.recordDecision(
+          'app-123',
+          { decision: ReviewerDecision.APPROVE },
+          salesUser,
+        ),
+      ).rejects.toThrow(ForbiddenException);
+
+      await expect(
+        service.recordDecision(
+          'app-123',
+          { decision: ReviewerDecision.APPROVE },
+          adminUser,
+        ),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('should throw BadRequestException (400) when REJECT decision is missing explanatory note', async () => {
+      mockQueryBuilder.getOne.mockResolvedValue({ ...assignedApp });
+
+      await expect(
+        service.recordDecision(
+          'app-123',
+          { decision: ReviewerDecision.REJECT, note: 'tiny' },
+          reviewerUser,
+        ),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('should throw BadRequestException (400) when REQUEST_INFO decision is missing explanatory note', async () => {
+      mockQueryBuilder.getOne.mockResolvedValue({ ...assignedApp });
+
+      await expect(
+        service.recordDecision(
+          'app-123',
+          { decision: ReviewerDecision.REQUEST_INFO, note: '' },
+          reviewerUser,
+        ),
+      ).rejects.toThrow(BadRequestException);
     });
   });
 });

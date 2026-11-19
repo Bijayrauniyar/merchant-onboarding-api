@@ -8,17 +8,24 @@ import {
   Query,
   UseGuards,
   ParseUUIDPipe,
+  HttpCode,
+  HttpStatus,
 } from '@nestjs/common';
 import { ApplicationsService } from './applications.service';
 import { CreateApplicationDto } from './dto/create-application.dto';
 import { UpdateApplicationDto } from './dto/update-application.dto';
 import { QueryApplicationsDto } from './dto/query-applications.dto';
+import { AssignReviewerDto } from './dto/assign-reviewer.dto';
+import { RecordDecisionDto } from './dto/record-decision.dto';
 import {
   ApiApplicationsDocs,
   ApiCreateApplicationDoc,
   ApiFindAllApplicationsDoc,
   ApiFindOneApplicationDoc,
   ApiUpdateApplicationDoc,
+  ApiSubmitApplicationDoc,
+  ApiAssignReviewerDoc,
+  ApiRecordDecisionDoc,
 } from './docs/applications.swagger';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
@@ -74,5 +81,40 @@ export class ApplicationsController {
     @CurrentUser() user: AuthenticatedUser,
   ): Promise<MerchantApplication> {
     return this.applicationsService.update(id, dto, user);
+  }
+
+  @Post(':id/submit')
+  @HttpCode(HttpStatus.OK)
+  @Roles(UserRole.SALES, UserRole.ADMIN)
+  @ApiSubmitApplicationDoc()
+  async submit(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthenticatedUser,
+  ): Promise<MerchantApplication> {
+    return this.applicationsService.submit(id, user);
+  }
+
+  @Post(':id/assign')
+  @HttpCode(HttpStatus.OK)
+  @Roles(UserRole.ADMIN)
+  @ApiAssignReviewerDoc()
+  async assignReviewer(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: AssignReviewerDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ): Promise<MerchantApplication> {
+    return this.applicationsService.assignReviewer(id, dto, user);
+  }
+
+  @Post(':id/decision')
+  @HttpCode(HttpStatus.OK)
+  @Roles(UserRole.REVIEWER)
+  @ApiRecordDecisionDoc()
+  async recordDecision(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: RecordDecisionDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ): Promise<MerchantApplication> {
+    return this.applicationsService.recordDecision(id, dto, user);
   }
 }
