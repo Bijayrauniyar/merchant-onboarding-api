@@ -1,6 +1,6 @@
 # Slice 4 Specification: Merchant Applications & Query Scoping
 
-> **Status:** `IN_PROGRESS`  
+> **Status:** `COMPLETED`  
 > **Target Commit:** `feat(applications): implement merchant applications data model, pure state machine and scoped queries`  
 > **Relevant Architecture Sections:** [DESIGN.md Section 2 (Entities)](../DESIGN.md#2-entities), [Section 4 (State Machine)](../DESIGN.md#4-status-model-and-lifecycle-state-machine), [Section 6 (Two-Tier Authorization)](../DESIGN.md#6-authorization--object-level-scoping), [AGENTS.md Section 3 (Security Invariants)](../AGENTS.md#3-mandatory-security--object-level-authorization-invariants)  
 
@@ -202,12 +202,12 @@ Enforce the **Anti-Enumeration Invariant**: When an authenticated user queries o
 
 ## 3. Acceptance Criteria & Definition of Done
 
-- [ ] `MerchantApplication` schema migrated to PostgreSQL with indexes on `createdById`, `assignedReviewerId`, and `status`.
-- [ ] Pure state machine unit tests pass with 100% path coverage.
-- [ ] Tier 1 route protection enforced (`JwtAuthGuard`, `RolesGuard`).
-- [ ] Tier 2 query scoping strictly isolates `SALES` and `REVIEWER` data at the SQL level.
-- [ ] Unauthorized object queries return `404 Not Found` (zero ID existence leaks).
-- [ ] Application updates locked with `409 Conflict` when status is not `DRAFT` or `INFO_REQUESTED`.
-- [ ] Audit logs emitted atomically for `APPLICATION_CREATED` and `APPLICATION_UPDATED` with contact info masked.
-- [ ] Clean controller architecture maintained: zero `@ApiProperty` boilerplate in DTOs, zero Swagger annotations cluttering controllers.
-- [ ] `npm run build` compiles with 0 errors. All unit and E2E tests pass.
+- [x] `MerchantApplication` schema migrated to PostgreSQL with indexes on `createdById`, `assignedReviewerId`, and `status`.
+- [x] Pure state machine unit tests pass with 100% path coverage.
+- [x] Tier 1 route protection enforced (`JwtAuthGuard`, `RolesGuard`).
+- [x] Tier 2 query scoping strictly isolates `SALES` and `REVIEWER` data at the SQL level.
+- [x] Unauthorized object queries return `404 Not Found` (zero ID existence leaks).
+- [x] Application updates locked with `409 Conflict` when status is not `DRAFT` or `INFO_REQUESTED`.
+- [x] Audit logs emitted atomically for `APPLICATION_CREATED` and `APPLICATION_UPDATED` with contact info masked.
+- [x] Clean controller architecture maintained: zero `@ApiProperty` boilerplate in DTOs, zero Swagger annotations cluttering controllers.
+- [x] `npm run build` compiles with 0 errors. All unit and E2E tests pass.

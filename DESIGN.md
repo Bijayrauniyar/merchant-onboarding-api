@@ -30,9 +30,9 @@ The platform architecture consists of the following core technologies:
 Unique constraint: `(applicationId, submissionVersion)`
 
 **AuditLog**
-`id (uuid)`, `actorId (nullable, null = system/worker)`, `action`, `entityType`, `entityId`, `metadata (jsonb, redacted)`, `createdAt`
+`id (uuid)`, `entityName`, `entityId (uuid)`, `action`, `actorId (nullable, null = system/worker)`, `actorRole`, `metadata (jsonb, redacted)`, `createdAt`
 
-Indexes: `MerchantApplication(createdById)`, `(assignedReviewerId)`, `(status)`; `AuditLog(entityType, entityId)`.
+Indexes: `MerchantApplication(createdById)`, `(assignedReviewerId)`, `(status)`; `AuditLog(entityName, entityId)`, `(actorId)`, `(createdAt)`.
 
 ### 2.1 Storage Architecture
 - **Unified Relational Store**: PostgreSQL maintains transactional domain entities (`MerchantApplication`, `User`, `RiskReview`) and append-only compliance history (`AuditLog`).
