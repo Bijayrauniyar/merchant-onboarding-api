@@ -5,6 +5,8 @@ import { validationSchema } from './config/validation.schema';
 import { DatabaseModule } from './database/database.module';
 import { HealthModule } from './modules/health/health.module';
 import { AuditModule } from './modules/audit/audit.module';
+import { UsersModule } from './modules/users/users.module';
+import { AuthModule } from './modules/auth/auth.module';
 
 @Module({
   imports: [
@@ -16,6 +18,8 @@ import { AuditModule } from './modules/audit/audit.module';
     DatabaseModule,
     HealthModule,
     AuditModule,
+    UsersModule,
+    AuthModule,
   ],
 })
 export class AppModule { }
