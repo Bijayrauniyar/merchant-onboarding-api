@@ -47,7 +47,7 @@ Slice 6 delivers the asynchronous verification backbone and consumer frontend su
 - **Files:**
   - `src/database/migrations/*-CreateRiskReviewsTable.ts`:
     - Table: `risk_reviews`.
-    - Columns: `id (uuid, PK)`, `application_id (uuid, FK merchant_applications)`, `submission_version (int)`, `result (varchar 50)`, `score (numeric 5,2)`, `raw_response (jsonb)`, `created_at (timestamptz)`.
+    - Columns: `id (uuid, PK)`, `application_id (uuid, FK merchant_applications)`, `submission_version (int)`, `result (varchar 50)`, `score (int, 0-100)`, `raw_response (jsonb)`, `created_at (timestamptz)`.
     - Unique composite constraint: `(application_id, submission_version)`.
   - `src/modules/risk/entities/risk-review.entity.ts`:
     - TypeORM entity with `@Index(['applicationId', 'submissionVersion'], { unique: true })`.
@@ -103,6 +103,7 @@ Slice 6 delivers the asynchronous verification backbone and consumer frontend su
     - Sales submits risky application -> Worker sets `riskStatus` to `FLAGGED` -> Reviewer evaluates advisory score.
     - Sales submits `FAIL` application -> Worker fails 3 times with exponential backoff -> `riskStatus` transitions to `FAILED`.
     - Duplicate job submission asserts single `RiskReview` record created (Idempotency).
+    - Database unique constraint verification: direct insertion of duplicate `(applicationId, submissionVersion)` throws QueryFailedError with unique violation code `23505` (Idempotency Layer 2).
   - `README.md`: Update Slice 6 checklist.
 - **Verification:** Run `npm run build`, `npm test`, and `npm run test:e2e`.
 

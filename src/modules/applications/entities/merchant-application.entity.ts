@@ -7,21 +7,12 @@ import {
   Index,
   ManyToOne,
   JoinColumn,
-  ValueTransformer,
 } from 'typeorm';
 import { User } from '../../users/entities/user.entity';
 import { ApplicationStatus } from '../enums/application-status.enum';
 import { RiskStatus } from '../enums/risk-status.enum';
 import { BusinessType } from '../enums/business-type.enum';
-
-/**
- * Numeric column transformer ensuring database numeric(p, s) strings
- * are automatically cast to JavaScript numbers upon hydration.
- */
-export const numericColumnTransformer: ValueTransformer = {
-  to: (data?: number | null) => (data !== undefined && data !== null ? data : null),
-  from: (data?: string | null) => (data !== undefined && data !== null ? parseFloat(data) : null),
-};
+import { numericColumnTransformer } from '../../../common/transformers/numeric.transformer';
 
 /**
  * Domain entity representing a merchant onboarding application.
