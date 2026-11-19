@@ -47,7 +47,6 @@ async function bootstrap() {
         description: 'Enter JWT Bearer token',
         in: 'header',
       },
-      'JWT-auth',
     )
     .build();
 
