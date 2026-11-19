@@ -1,12 +1,68 @@
 import {
   IsEnum,
   IsNotEmpty,
-  IsString,
-  MaxLength,
-  MinLength,
-  ValidateIf,
+  Validate,
+  ValidatorConstraint,
+  ValidatorConstraintInterface,
+  ValidationArguments,
 } from 'class-validator';
 import { ReviewerDecision } from '../enums/reviewer-decision.enum';
+
+/**
+ * Custom validator ensuring contextual, situation-specific validation for decision notes:
+ * - Optional when decision is APPROVE (if omitted, passes cleanly).
+ * - Mandatory when decision is REJECT or REQUEST_INFO (min 5 chars, max 2000 chars).
+ * - Emits exactly ONE situation-specific error message at a time.
+ */
+@ValidatorConstraint({ name: 'decisionNote', async: false })
+export class DecisionNoteValidator implements ValidatorConstraintInterface {
+  private failureReason = 'note is invalid';
+
+  validate(note: unknown, args: ValidationArguments): boolean {
+    const obj = args.object as RecordDecisionDto;
+    const isApprove = obj?.decision === ReviewerDecision.APPROVE;
+
+    // Optional for APPROVE if omitted or empty
+    if (isApprove && (note === undefined || note === null || note === '')) {
+      return true;
+    }
+
+    // Mandatory for REJECT and REQUEST_INFO if omitted or empty
+    if (
+      !isApprove &&
+      (note === undefined ||
+        note === null ||
+        (typeof note === 'string' && note.trim().length === 0))
+    ) {
+      this.failureReason =
+        'note is mandatory when rejecting or requesting information';
+      return false;
+    }
+
+    // Must be a string if provided
+    if (typeof note !== 'string') {
+      this.failureReason = 'note must be a string';
+      return false;
+    }
+
+    const trimmed = note.trim();
+    if (trimmed.length < 5) {
+      this.failureReason = 'note must be at least 5 characters long';
+      return false;
+    }
+
+    if (note.length > 2000) {
+      this.failureReason = 'note must not exceed 2000 characters';
+      return false;
+    }
+
+    return true;
+  }
+
+  defaultMessage(): string {
+    return this.failureReason;
+  }
+}
 
 /**
  * Request payload for a reviewer recording a decision on a submitted merchant application.
@@ -28,19 +84,6 @@ export class RecordDecisionDto {
    * Optional for APPROVE; mandatory (minimum 5 characters) for REJECT and REQUEST_INFO.
    * @example "Merchant documentation satisfies all AML/KYB verification requirements."
    */
-  @ValidateIf(
-    (o: RecordDecisionDto) =>
-      o.decision !== ReviewerDecision.APPROVE || o.note !== undefined,
-  )
-  @IsNotEmpty({
-    message: 'note is mandatory when rejecting or requesting information',
-  })
-  @IsString({ message: 'note must be a string' })
-  @MinLength(5, {
-    message: 'note must be at least 5 characters long',
-  })
-  @MaxLength(2000, {
-    message: 'note must not exceed 2000 characters',
-  })
+  @Validate(DecisionNoteValidator)
   note?: string;
 }

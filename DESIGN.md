@@ -44,6 +44,7 @@ Indexes: `MerchantApplication(createdById)`, `(assignedReviewerId)`, `(status)`;
 | Action | ADMIN | REVIEWER | SALES |
 |---|---|---|---|
 | Login | yes | yes | yes |
+| List users (e.g. reviewers for assignment) | yes | no | no |
 | Create application | yes | no | yes |
 | View / list applications | all | only where assigned to them | only ones they created |
 | Update application (when editable) | any | no | only ones they created |
@@ -54,6 +55,7 @@ Indexes: `MerchantApplication(createdById)`, `(assignedReviewerId)`, `(status)`;
 ### 3.1 Invariants & Security Rules
 - **Decision Segregation**: Only the specifically assigned `REVIEWER` may record risk decisions (`APPROVE`, `REJECT`, `REQUEST_INFO`). `ADMIN` and other unassigned users are barred from decision endpoints.
 - **Assignment Constraints**: Reviewers must hold the `REVIEWER` role. An application cannot be assigned to `SALES` or `ADMIN`.
+- **User Directory for Admin Assignment (`GET /users`)**: To allow Admin users and frontend client interfaces to dynamically populate reviewer dropdowns during assignment, a scoped read endpoint `GET /users?role=REVIEWER` is provided. It is strictly restricted to `ADMIN` users (`@Roles(UserRole.ADMIN)`) and guarantees zero credential leakage by strictly excluding `passwordHash` from the response DTO.
 - **Internal Provisioning**: User accounts are provisioned via database seed scripts; public user registration is intentionally omitted for this internal operational platform.
 
 ### 3.2 Authentication & Token Architecture (JWT & bcrypt)

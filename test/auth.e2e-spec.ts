@@ -302,7 +302,7 @@ describe('Authentication & RBAC (e2e)', () => {
 
       expect(response.body.statusCode).toBe(403);
       expect(response.body.message).toContain(
-        'Access denied: requires one of the following roles: [ADMIN]',
+        'Access denied: insufficient permissions',
       );
     });
   });
@@ -345,7 +345,7 @@ describe('Authentication & RBAC (e2e)', () => {
 
       expect(response.body.statusCode).toBe(403);
       expect(response.body.message).toContain(
-        'Access denied: requires one of the following roles: [ADMIN]',
+        'Access denied: insufficient permissions',
       );
     });
 
@@ -357,7 +357,7 @@ describe('Authentication & RBAC (e2e)', () => {
 
       expect(response.body.statusCode).toBe(403);
       expect(response.body.message).toContain(
-        'Access denied: requires one of the following roles: [ADMIN]',
+        'Access denied: insufficient permissions',
       );
     });
 

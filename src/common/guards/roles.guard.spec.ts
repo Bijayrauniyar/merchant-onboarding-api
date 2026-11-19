@@ -66,7 +66,7 @@ describe('RolesGuard', () => {
 
       expect(() => guard.canActivate(context)).toThrow(
         new ForbiddenException(
-          'Access denied: requires one of the following roles: [ADMIN]',
+          'Access denied: insufficient permissions',
         ),
       );
     });
