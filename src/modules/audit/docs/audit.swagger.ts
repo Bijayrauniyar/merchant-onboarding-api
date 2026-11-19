@@ -5,6 +5,7 @@ import {
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
+import { AuditLog } from '../entities/audit-log.entity';
 
 /**
  * Controller-level Swagger documentation for Audit module.
@@ -25,6 +26,7 @@ export function ApiFindAllAuditLogsDoc() {
     ApiResponse({
       status: 200,
       description: 'Paginated audit trail records',
+      type: [AuditLog],
     }),
     ApiResponse({
       status: 401,

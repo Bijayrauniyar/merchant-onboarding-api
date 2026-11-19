@@ -178,6 +178,11 @@ export function ApiSubmitApplicationDoc() {
       description:
         'Conflict: Application cannot be submitted in current lifecycle status',
     }),
+    ApiResponse({
+      status: 503,
+      description:
+        'Service Unavailable: Background risk queue is temporarily unavailable. Application submitted and marked FAILED for manual review.',
+    }),
   );
 }
 

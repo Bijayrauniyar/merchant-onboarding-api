@@ -138,31 +138,41 @@ The system separates **Business Workflow (`status`)** from **Automated Backgroun
 
 ### 4.2 State Transition Diagram
 
-```
-       [ SALES creates ]
-               │
-               ▼
-          ┌─────────┐
-          │  DRAFT  │◄─────────────────────────────────────────────┐
-          └────┬────┘                                              │
-               │ POST /applications/:id/submit                     │
-               ▼                                                   │
-        ┌─────────────┐                                            │
-   ┌───►│  SUBMITTED  │ (ADMIN assigns REVIEWER)                   │
-   │    └──────┬──────┘ (BullMQ runs async KYB in background)      │
-   │           │                                                   │
-   │           ├───────────────┬───────────────────┐               │
-   │           ▼               ▼                   ▼               │
-   │     [ approve ]      [ reject ]      [ request_info ]         │
-   │           │               │                   │               │
-   │           ▼               ▼                   ▼               │
-   │     ┌───────────┐   ┌───────────┐   ┌──────────────────┐      │
-   │     │ APPROVED  │   │ REJECTED  │   │  INFO_REQUESTED  │      │
-   │     │ (Terminal)│   │ (Terminal)│   └─────────┬────────┘      │
-   │     └───────────┘   └───────────┘             │               │
-   │                                               │ SALES edits   │
-   │                                               │ & resubmits   │
-   └───────────────────────────────────────────────┴───────────────┘
+```mermaid
+flowchart TD
+    subgraph BusinessLifecycle["Application Business Lifecycle (status)"]
+        direction TB
+        Start(( )) --> DRAFT["DRAFT<br/>Editable by creator (SALES)"]
+        
+        DRAFT -->|"POST /applications/:id/submit<br/>(submissionVersion += 1)"| SUBMITTED["SUBMITTED<br/>Locked against direct edits<br/>Underwriting runs in parallel"]
+        
+        SUBMITTED -->|"ADMIN assigns reviewer<br/>POST /applications/:id/assign"| SUBMITTED
+        
+        SUBMITTED -->|"Reviewer decision: APPROVE<br/>[Gated: riskStatus != PENDING]"| APPROVED["APPROVED<br/>(Terminal & Immutable)"]
+        
+        SUBMITTED -->|"Reviewer decision: REJECT (with note)<br/>[Gated: riskStatus != PENDING]"| REJECTED["REJECTED<br/>(Terminal & Immutable)"]
+        
+        SUBMITTED -->|"Reviewer decision: REQUEST_INFO (with note)<br/>[Gated: riskStatus != PENDING]"| INFO_REQUESTED["INFO_REQUESTED<br/>Editing re-opened for SALES<br/>Reviewer assignment preserved"]
+        
+        INFO_REQUESTED -->|"SALES edits & resubmits<br/>POST /applications/:id/submit (v + 1)"| SUBMITTED
+        
+        APPROVED --> EndApp(( ))
+        REJECTED --> EndRej(( ))
+    end
+
+    subgraph RiskLifecycle["Automated Risk Verification Lifecycle (riskStatus)"]
+        direction TB
+        RStart(( )) --> NOT_STARTED["NOT_STARTED<br/>(Default while in DRAFT)"]
+        NOT_STARTED -->|"submit() dispatches BullMQ job"| PENDING["PENDING<br/>(Blocks human decision with 409 Conflict)"]
+        
+        PENDING -->|"Clean merchant (Score 85)"| PASSED["PASSED<br/>(Advisory: Low Risk)"]
+        PENDING -->|"Anomalies detected (Score 45)"| FLAGGED["FLAGGED<br/>(Advisory: Elevated Risk)"]
+        PENDING -->|"3x retries exhausted or Redis down"| FAILED["FAILED<br/>(Manual reviewer determination required)"]
+        
+        PASSED --> Ungated["Ungates Reviewer Decisions<br/>(Enables APPROVE / REJECT / REQUEST_INFO)"]
+        FLAGGED --> Ungated
+        FAILED --> Ungated
+    end
 ```
 
 ---
