@@ -109,6 +109,172 @@ describe('DataMaskingUtil', () => {
       expect(result.meta.session.valid).toBe(true);
     });
 
+    it('should mask sensitive update diff objects with no raw email or phone in JSON.stringify output', () => {
+      const input = {
+        ownerEmail: { from: 'old@shop.com', to: 'new@shop.com' },
+        ownerPhone: { from: '+14155550199', to: '+14155550200' },
+      };
+
+      const result = maskSensitiveData(input);
+      const jsonOutput = JSON.stringify(result);
+
+      // Expect no raw email or phone anywhere in JSON.stringify of the output
+      expect(jsonOutput).not.toContain('old@shop.com');
+      expect(jsonOutput).not.toContain('new@shop.com');
+      expect(jsonOutput).not.toContain('+14155550199');
+      expect(jsonOutput).not.toContain('+14155550200');
+
+      // Verify properly masked values and preserved structure
+      expect(result.ownerEmail.from).toBe('o***d@shop.com');
+      expect(result.ownerEmail.to).toBe('n***w@shop.com');
+      expect(result.ownerPhone.from).toBe('***-***-0199');
+      expect(result.ownerPhone.to).toBe('***-***-0200');
+    });
+
+    it('should mask a nested object three levels deep under a sensitive key', () => {
+      const input = {
+        ownerEmail: {
+          level1: {
+            level2: {
+              address: 'deep@shop.com',
+            },
+          },
+        },
+        ownerPhone: {
+          direct: {
+            support: {
+              number: '+14155550199',
+            },
+          },
+        },
+        secretKey: {
+          auth: {
+            vault: {
+              token: 'my_deep_secret_token',
+            },
+          },
+        },
+      };
+
+      const result = maskSensitiveData(input);
+
+      expect(result.ownerEmail.level1.level2.address).toBe('d***p@shop.com');
+      expect(result.ownerPhone.direct.support.number).toBe('***-***-0199');
+      expect(result.secretKey.auth.vault.token).toBe('[REDACTED]');
+    });
+
+    it('should mask an array of strings under a sensitive key', () => {
+      const input = {
+        ownerEmail: ['primary@shop.com', 'backup@shop.com'],
+        ownerPhone: ['+14155550199', '+14155550200'],
+        apiKeys: ['key_live_123', 'key_live_456'],
+      };
+
+      const result = maskSensitiveData(input);
+
+      expect(result.ownerEmail).toEqual(['p***y@shop.com', 'b***p@shop.com']);
+      expect(result.ownerPhone).toEqual(['***-***-0199', '***-***-0200']);
+      expect(result.apiKeys).toEqual(['[REDACTED]', '[REDACTED]']);
+    });
+
+    it('should leave non-sensitive keys unchanged', () => {
+      const input = {
+        businessName: 'Apex Roasters Inc',
+        legalBusinessName: 'Apex Roasters LLC',
+        requestedMonthlyVolume: 50000,
+        requestedAvgTicket: 25.5,
+        status: 'DRAFT',
+        tags: ['retail', 'coffee'],
+        metadata: {
+          notes: 'Standard onboarding flow',
+          applicationCount: 1,
+          isVerified: false,
+        },
+      };
+
+      const result = maskSensitiveData(input);
+
+      expect(result).toEqual(input);
+    });
+
+    it('should ensure null and undefined values do not throw at root or nested levels', () => {
+      expect(() => maskSensitiveData(null)).not.toThrow();
+      expect(maskSensitiveData(null)).toBeNull();
+
+      expect(() => maskSensitiveData(undefined)).not.toThrow();
+      expect(maskSensitiveData(undefined)).toBeUndefined();
+
+      const inputWithNulls = {
+        ownerEmail: null,
+        ownerPhone: undefined,
+        password: null,
+        token: undefined,
+        businessName: null,
+        notes: undefined,
+        nested: {
+          email: null,
+          phone: undefined,
+          secret: null,
+          regularField: undefined,
+        },
+        emailsList: [null, undefined, 'user@shop.com'],
+        regularList: [null, undefined, 'regular-item'],
+      };
+
+      let result: any;
+      expect(() => {
+        result = maskSensitiveData(inputWithNulls);
+      }).not.toThrow();
+
+      expect(result.ownerEmail).toBeNull();
+      expect(result.ownerPhone).toBeUndefined();
+      expect(result.password).toBeNull();
+      expect(result.token).toBeUndefined();
+      expect(result.businessName).toBeNull();
+      expect(result.notes).toBeUndefined();
+      expect(result.nested.email).toBeNull();
+      expect(result.nested.phone).toBeUndefined();
+      expect(result.nested.secret).toBeNull();
+      expect(result.nested.regularField).toBeUndefined();
+      expect(result.emailsList).toEqual([null, undefined, 'u***r@shop.com']);
+      expect(result.regularList).toEqual([null, undefined, 'regular-item']);
+    });
+
+    it('should mask email and phone fields in update diffs ({ from, to }) with mixed fields', () => {
+      const input = {
+        updatedFields: ['ownerEmail', 'ownerPhone', 'password'],
+        changes: {
+          ownerEmail: {
+            from: 'old.email@example.com',
+            to: 'new.email@example.com',
+          },
+          ownerPhone: {
+            from: '+1-555-111-2222',
+            to: '+1-555-333-4444',
+          },
+          password: {
+            from: 'oldPassword123',
+            to: 'newPassword456',
+          },
+          businessName: {
+            from: 'Old Business',
+            to: 'New Business',
+          },
+        },
+      };
+
+      const result = maskSensitiveData(input);
+
+      expect(result.changes.ownerEmail.from).toBe('o***l@example.com');
+      expect(result.changes.ownerEmail.to).toBe('n***l@example.com');
+      expect(result.changes.ownerPhone.from).toBe('***-***-2222');
+      expect(result.changes.ownerPhone.to).toBe('***-***-4444');
+      expect(result.changes.password.from).toBe('[REDACTED]');
+      expect(result.changes.password.to).toBe('[REDACTED]');
+      expect(result.changes.businessName.from).toBe('Old Business');
+      expect(result.changes.businessName.to).toBe('New Business');
+    });
+
     it('should not mutate the original input object (immutability)', () => {
       const original = {
         ownerEmail: 'test@example.com',
@@ -121,9 +287,7 @@ describe('DataMaskingUtil', () => {
       expect(original).toEqual(originalCopy);
     });
 
-    it('should handle primitives, null and undefined cleanly', () => {
-      expect(maskSensitiveData(null)).toBeNull();
-      expect(maskSensitiveData(undefined)).toBeUndefined();
+    it('should handle primitives cleanly', () => {
       expect(maskSensitiveData('plain text')).toBe('plain text');
       expect(maskSensitiveData(12345)).toBe(12345);
       expect(maskSensitiveData(true)).toBe(true);

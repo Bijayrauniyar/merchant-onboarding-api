@@ -48,6 +48,24 @@ describe('LoggingInterceptor', () => {
     });
   });
 
+  it('should include x-request-id in log prefix when header is present', (done) => {
+    (mockRequest as any).headers = { 'x-request-id': 'req-12345' };
+    mockCallHandler = {
+      handle: () => of({ status: 'ok' }),
+    };
+
+    const observable = interceptor.intercept(mockExecutionContext, mockCallHandler);
+
+    observable.subscribe({
+      next: (val) => {
+        expect(val).toEqual({ status: 'ok' });
+      },
+      complete: () => {
+        done();
+      },
+    });
+  });
+
   it('should intercept error responses and propagate the error', (done) => {
     const error = new Error('Database connection failed');
     mockCallHandler = {

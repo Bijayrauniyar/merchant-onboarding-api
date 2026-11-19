@@ -13,6 +13,7 @@ The platform architecture consists of the following core technologies:
 - **PostgreSQL 16 & TypeORM**: Primary relational database for all domain entities and audit logs, managed strictly with reviewed migrations (`synchronize: false`).
 - **Redis 7 & BullMQ 5+**: In-memory message broker and distributed queue for non-blocking asynchronous risk review processing.
 - **JWT & bcrypt**: Stateless authentication tokens and secure password hashing (10 salt rounds).
+- **Security Hardening (`@nestjs/throttler` & `helmet`)**: Targeted anti-brute-force rate limiting on login and secure HTTP headers configured with Swagger UI CSP compatibility.
 - **Docker Compose**: Containerized local environment orchestrating PostgreSQL and Redis.
 - **Jest & Supertest**: Unit testing suite for pure domain logic and integration suite for API/authorization flows.
 - **OpenAPI / Swagger**: Interactive API documentation at `/api/docs`.
@@ -43,23 +44,26 @@ Indexes: `MerchantApplication(createdById)`, `(assignedReviewerId)`, `(status)`;
 
 | Action | ADMIN | REVIEWER | SALES |
 |---|---|---|---|
-| Login | yes | yes | yes |
-| List users (e.g. reviewers for assignment) | yes | no | no |
-| Create application | yes | no | yes |
-| View / list applications | all | only where assigned to them | only ones they created |
-| Update application (when editable) | any | no | only ones they created |
-| Submit application | any | no | only ones they created |
-| Assign reviewer | yes | no | no |
-| Record decision | no | only if assigned | no |
+| Login (`POST /auth/login`) | yes | yes | yes |
+| List users (`GET /users`) | yes | no | no |
+| Create application (`POST /applications`) | yes | no | yes |
+| View / list applications (`GET /applications`) | all | only where assigned to them | only ones they created |
+| Update application (`PATCH /applications/:id`) | any | no | only ones they created |
+| Submit application (`POST /applications/:id/submit`) | any | no | only ones they created |
+| Assign reviewer (`POST /applications/:id/assign`) | yes | no | no |
+| Record decision (`POST /applications/:id/decision`) | no | only if assigned | no |
+| View compliance audit logs (`GET /audit-logs`) | yes | no | no |
 
 ### 3.1 Invariants & Security Rules
 - **Decision Segregation**: Only the specifically assigned `REVIEWER` may record risk decisions (`APPROVE`, `REJECT`, `REQUEST_INFO`). `ADMIN` and other unassigned users are barred from decision endpoints.
 - **Assignment Constraints**: Reviewers must hold the `REVIEWER` role. An application cannot be assigned to `SALES` or `ADMIN`.
 - **User Directory for Admin Assignment (`GET /users`)**: To allow Admin users and frontend client interfaces to dynamically populate reviewer dropdowns during assignment, a scoped read endpoint `GET /users?role=REVIEWER` is provided. It is strictly restricted to `ADMIN` users (`@Roles(UserRole.ADMIN)`) and guarantees zero credential leakage by strictly excluding `passwordHash` from the response DTO.
+- **Compliance Audit Trail Endpoint (`GET /audit-logs`)**: To support regulatory audit requirements and enable evaluators/administrators to verify immutable audit logs and PII redaction directly via Swagger UI without requiring raw database CLI access, a paginated read endpoint `GET /audit-logs?entityId=&action=&limit=&offset=` is provided. It is strictly restricted to `ADMIN` users (`@Roles(UserRole.ADMIN)`).
 - **Internal Provisioning**: User accounts are provisioned via database seed scripts; public user registration is intentionally omitted for this internal operational platform.
 
 ### 3.2 Authentication & Token Architecture (JWT & bcrypt)
 - **Password Security**: Passwords are saved as bcrypt hashes (10 salt rounds). Credentials are authenticated via `POST /auth/login`.
+- **Targeted Anti-Brute-Force Rate Limiting**: `POST /auth/login` is the platform's sole public, unauthenticated endpoint. It is protected by `@nestjs/throttler` (5 attempts / minute per IP) to prevent password dictionary attacks and Bcrypt CPU starvation (~70ms per hash). Authenticated back-office endpoints (`/applications`, `/users`, `/audit-logs`) remain unthrottled to avoid disrupting internal staff workflows.
 - **Stateless Authorization**: Protected routes use stateless Bearer JWTs signed with `sub` (user ID) and `role`. Guards (`JwtAuthGuard`, `RolesGuard`) validate tokens in memory without querying the database on each request.
 - **Context Injection**: The verified token populates `req.user`, providing the authenticated caller identity for query scoping.
 
@@ -552,11 +556,17 @@ sequenceDiagram
 Audited actions: `APPLICATION_CREATED`, `APPLICATION_UPDATED`, `APPLICATION_SUBMITTED`, `REVIEWER_ASSIGNED`, `DECISION_RECORDED`, `RISK_REVIEW_COMPLETED`, `RISK_REVIEW_FAILED`.
 
 - Metadata stores changed field names plus redacted values, never full payloads.
-- One redaction helper strips or masks keys such as `password`, `passwordHash`, `token`, `authorization`, `secret`, and masks `ownerEmail` and `ownerPhone`.
+- One redaction helper (`maskSensitiveData`) strips or masks keys such as `password`, `passwordHash`, `token`, `authorization`, `secret`, and masks `ownerEmail` and `ownerPhone`.
+- Recursive Diff Sanitization: In update diffs (`{ changes: { ownerEmail: { from, to } } }`), the utility propagates `parentKey` so that nested `from` and `to` values are evaluated and masked correctly (e.g. `o***d@example.com`).
 - Passwords and tokens are never logged (app logs or audit).
-- Passwords are hashed with bcrypt.
+- Passwords are hashed with bcrypt (10 rounds).
 - Fields that would need field-level encryption in production: `ownerEmail`, `ownerPhone`, and any future tax ID, national ID or bank account. Documented only, not implemented (approach: AES-256-GCM with a KMS-managed key).
 - All seed data is fake. No real personal or card data.
+
+### 7.1 Compliance Audit Trail Inspection (`GET /audit-logs`)
+- **Route**: `GET /audit-logs?entityId=&action=&limit=&offset=`
+- **Authorization**: Restricted strictly to `ADMIN` (`@Roles(UserRole.ADMIN)`).
+- **Functionality**: Provides paginated access to chronological compliance audit entries. Allows compliance officers and system evaluators to verify state changes, actor roles, and active PII redaction directly via Swagger UI without requiring raw database CLI access.
 
 ## 8. Decisions and trade-offs
 
@@ -573,7 +583,18 @@ Audited actions: `APPLICATION_CREATED`, `APPLICATION_UPDATED`, `APPLICATION_SUBM
 | Short-lived JWT, no refresh tokens | Prioritizes core authorization. Trade-off: role changes take effect after token expiry; production would add refresh tokens. |
 | Enqueue after DB commit | Avoids a job running before its data exists. Trade-off: a crash between commit and enqueue leaves `PENDING` with no job. Production fix: transactional outbox. |
 | Fake KYB is deterministic | Makes retry and flagged paths testable. |
+| Login Rate Limiting & Anti-Brute-Force | Configured via `@nestjs/throttler` strictly on `POST /auth/login` (5 attempts/min) to prevent credential stuffing without throttling internal staff operations. |
+| Security Headers (`helmet`) & Anti-DoS | Enforces HSTS, CSP (configured for Swagger UI compatibility), MIME-sniffing protection, and 100kb payload size limit. |
+| Administrative Audit Endpoint (`GET /audit-logs`) | Read-only compliance endpoint allowing evaluators to verify audit records and PII masking via Swagger UI with zero external dependencies. |
 
-## 9. Out of scope
+## 9. Out of Scope & Production Evolution
 
-Webhook callback, MongoDB audit store, separate ADR, refresh tokens, password reset, user registration, audit-log read endpoint, manual risk re-run endpoint, dead-letter queue, rate limiting, real field-level encryption.
+The following items are deliberately omitted to avoid premature complexity, dual-write consistency issues, and unnecessary operational overhead within this project:
+- **Distributed / Global Rate Limiting**: Internal back-office staff routes (`/applications`, `/users`, `/audit-logs`) do not require tight rate limiting; global rate limiting causes false `429 Too Many Requests` errors during high-volume operations. Throttling is targeted strictly at the public `POST /auth/login` endpoint.
+- **Secondary MongoDB Audit Store**: Section 1 of the assignment permits PostgreSQL for audit logs. Storing audit logs in PostgreSQL inside atomic ACID transactions guarantees zero-drift consistency, whereas MongoDB introduces distributed transaction and dual-write complexity.
+- **External KMS Envelope Encryption**: Documented for production (AES-256-GCM via AWS KMS or GCP Cloud KMS); mocked in-memory/standard column storage for local development.
+- **Webhooks & 3D Secure Callbacks**: Asynchronous event publishing to external client webhooks is deferred.
+- **User Self-Registration & Password Reset**: The platform is an internal enterprise tool; users are provisioned via database seed scripts.
+- **Refresh Tokens & Distributed Revocation**: Stateless 24h JWT access tokens are used. Instant revocation via Redis token blocklists is documented for future production scale.
+- **Dead-Letter Queue (DLQ) & Alerting**: Redis retains failed jobs with exponential retries; automated PagerDuty/Datadog DLQ routing is deferred.
+- **Transactional Outbox Pattern**: Documented as the production upgrade path for post-commit BullMQ enqueueing.

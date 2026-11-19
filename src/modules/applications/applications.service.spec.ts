@@ -106,6 +106,9 @@ describe('ApplicationsService', () => {
           create: jest.fn((entityClass, data) => ({ ...data, id: 'app-123' })),
           save: jest.fn(async (entityClass, entity) => entity),
           update: jest.fn().mockResolvedValue({ affected: 1 }),
+          findOne: jest.fn(async (entityClass, options) =>
+            mockUserRepo.findOne(options),
+          ),
           createQueryBuilder: jest.fn(() => mockQueryBuilder),
         };
         return cb(mockManager);

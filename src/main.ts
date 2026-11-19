@@ -2,6 +2,9 @@ import { NestFactory } from '@nestjs/core';
 import { ValidationPipe, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import helmet from 'helmet';
+import { json, urlencoded } from 'express';
+import { randomUUID } from 'crypto';
 import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
@@ -9,8 +12,36 @@ import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 async function bootstrap() {
   const logger = new Logger('Bootstrap');
   const app = await NestFactory.create(AppModule);
+  const configService = app.get(ConfigService);
 
-  // Enable CORS
+  // Correlation ID Middleware for end-to-end distributed request tracing
+  app.use((req: any, res: any, next: any) => {
+    const correlationId = req.headers['x-request-id'] || randomUUID();
+    req.headers['x-request-id'] = correlationId;
+    res.setHeader('X-Request-Id', correlationId);
+    next();
+  });
+
+  // HTTP Security Headers via Helmet (with Swagger UI CSP compatibility)
+  app.use(
+    helmet({
+      contentSecurityPolicy: {
+        directives: {
+          defaultSrc: [`'self'`],
+          styleSrc: [`'self'`, `'unsafe-inline'`],
+          imgSrc: [`'self'`, 'data:', 'validator.swagger.io'],
+          scriptSrc: [`'self'`, `https: 'unsafe-inline'`],
+        },
+      },
+      crossOriginEmbedderPolicy: false,
+    }),
+  );
+
+  // Strict Request Body Payload Limits (Anti-DoS)
+  app.use(json({ limit: '100kb' }));
+  app.use(urlencoded({ extended: true, limit: '100kb' }));
+
+  // Enable standard CORS
   app.enableCors();
 
   // Enable graceful shutdown hooks for clean process termination
@@ -53,7 +84,6 @@ async function bootstrap() {
   const document = SwaggerModule.createDocument(app, swaggerConfig);
   SwaggerModule.setup('api/docs', app, document);
 
-  const configService = app.get(ConfigService);
   const port = configService.get<number>('port', 3000);
 
   await app.listen(port);

@@ -30,11 +30,11 @@ SALES staff create and submit merchant applications. Submitting triggers an asyn
 
 ## Roles & Permissions Matrix
 
-| Role | Application Access | Assigned Reviewer | Risk Decisions |
-|---|---|---|---|
-| **`ADMIN`** | Create, view, edit, and submit any application. | Assigns reviewers to `SUBMITTED` applications. | ❌ Forbidden (Enforces segregation of duties). |
-| **`REVIEWER`** | View only applications assigned to them. | Assigned by `ADMIN`. | ✅ Approve, reject, or request info on assigned applications. |
-| **`SALES`** | Create, view, edit, and submit **only their own** applications. | ❌ Cannot assign. | ❌ Forbidden (Cannot decide or approve). |
+| Role | Application Access | Assigned Reviewer | Risk Decisions | Audit Log Access |
+|---|---|---|---|---|
+| **`ADMIN`** | Create, view, edit, and submit any application. | Assigns reviewers to `SUBMITTED` applications. | ❌ Forbidden (Enforces segregation of duties). | ✅ Full paginated access (`GET /audit-logs`). |
+| **`REVIEWER`** | View only applications assigned to them. | Assigned by `ADMIN`. | ✅ Approve, reject, or request info on assigned applications. | ❌ Forbidden (`403 Forbidden`). |
+| **`SALES`** | Create, view, edit, and submit **only their own** applications. | ❌ Cannot assign. | ❌ Forbidden (Cannot decide or approve). | ❌ Forbidden (`403 Forbidden`). |
 
 ---
 
@@ -55,7 +55,7 @@ SALES staff create and submit merchant applications. Submitting triggers an asyn
 - [x] **Slice 4: Applications & Query Scoping** (`MerchantApplication` CRUD, Anti-IDOR scoping `createdById`, 404 tests)
 - [x] **Slice 5: State Machine & Lifecycle** (Pure `canTransition()` validator, submit, assign, decision gating, 409 tests)
 - [x] **Slice 6: Asynchronous Risk Review** (BullMQ + Redis, post-commit dispatch, 3-layer idempotency, 3x backoff retries, pessimistic write locks, queue failure recovery)
-- [x] **Slice 7: Production Hardening & Final Verification** (Centralized exception filters, full test suite pass, zero-secrets audit)
+- [x] **Slice 7: Production Hardening, Security & Verification** (Login rate limiting on `POST /auth/login` via `@nestjs/throttler`, `helmet` security headers with Swagger CSP compatibility, 100kb payload DoS limit, PII diff redaction, administrative audit trail endpoint `GET /audit-logs`, and full 207-test suite pass)
 
 ---
 

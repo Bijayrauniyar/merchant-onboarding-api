@@ -11,6 +11,8 @@ const SECRET_KEY_REGEX =
 const EMAIL_KEY_REGEX = /email/i;
 const PHONE_KEY_REGEX = /phone|mobile|telephone/i;
 
+export type SensitiveRule = 'secret' | 'email' | 'phone';
+
 /**
  * Masks an email address into format: j***e@domain.com
  */
@@ -51,22 +53,69 @@ export function maskPhone(phone: string): string {
 }
 
 /**
+ * Determines the sensitivity rule matched by a given property key.
+ */
+function getSensitivityRule(key: string): SensitiveRule | null {
+  if (SECRET_KEY_REGEX.test(key)) {
+    return 'secret';
+  }
+  if (EMAIL_KEY_REGEX.test(key)) {
+    return 'email';
+  }
+  if (PHONE_KEY_REGEX.test(key)) {
+    return 'phone';
+  }
+  return null;
+}
+
+/**
+ * Masks a string value according to the specified sensitivity rule.
+ */
+function maskValueByRule(val: string, rule: SensitiveRule): string {
+  switch (rule) {
+    case 'secret':
+      return '[REDACTED]';
+    case 'email':
+      return maskEmail(val);
+    case 'phone':
+      return maskPhone(val);
+  }
+}
+
+/**
  * Recursively cleanses an object, array, or primitive value.
  * Returns a new deep clone without mutating the original input.
+ *
+ * When a key matches a sensitive pattern, every string value beneath it,
+ * at any depth and inside arrays, is masked using that key's rule:
+ * - email keys use the existing email mask (e.g. j***e@domain.com)
+ * - phone keys use the existing phone mask (e.g. ***-***-1234)
+ * - password/token/secret/authorization keys become '[REDACTED]'
+ *
+ * Sensitivity is carried down through recursion via `inheritedRule`.
+ * Non-sensitive keys recurse normally without altering shapes.
  */
-export function maskSensitiveData<T = any>(data: T): T {
+export function maskSensitiveData<T = any>(
+  data: T,
+  inheritedRule?: SensitiveRule,
+): T {
   if (data === null || data === undefined) {
     return data;
   }
 
   // Primitive types
   if (typeof data !== 'object') {
+    if (typeof data === 'string' && inheritedRule) {
+      return maskValueByRule(data, inheritedRule) as unknown as T;
+    }
     return data;
   }
 
   // Arrays
   if (Array.isArray(data)) {
-    return data.map((item) => maskSensitiveData(item)) as unknown as T;
+    return data.map((item) =>
+      maskSensitiveData(item, inheritedRule),
+    ) as unknown as T;
   }
 
   // Dates
@@ -78,27 +127,28 @@ export function maskSensitiveData<T = any>(data: T): T {
   const result: Record<string, any> = {};
 
   for (const [key, value] of Object.entries(data)) {
-    // 1. Secrets and credentials: completely redact
-    if (SECRET_KEY_REGEX.test(key)) {
+    const keyRule = getSensitivityRule(key);
+    // If the key has its own sensitive pattern, that takes precedence;
+    // otherwise inherit sensitivity from the parent context.
+    const activeRule = keyRule ?? inheritedRule;
+
+    if (value === null || value === undefined) {
+      result[key] = value;
+      continue;
+    }
+
+    if (typeof value === 'object') {
+      result[key] = maskSensitiveData(value, activeRule);
+      continue;
+    }
+
+    if (typeof value === 'string' && activeRule) {
+      result[key] = maskValueByRule(value, activeRule);
+      continue;
+    }
+
+    if (keyRule === 'secret') {
       result[key] = '[REDACTED]';
-      continue;
-    }
-
-    // 2. Emails
-    if (EMAIL_KEY_REGEX.test(key) && typeof value === 'string') {
-      result[key] = maskEmail(value);
-      continue;
-    }
-
-    // 3. Phone numbers
-    if (PHONE_KEY_REGEX.test(key) && typeof value === 'string') {
-      result[key] = maskPhone(value);
-      continue;
-    }
-
-    // 4. Recursive nested objects/arrays
-    if (typeof value === 'object' && value !== null) {
-      result[key] = maskSensitiveData(value);
       continue;
     }
 

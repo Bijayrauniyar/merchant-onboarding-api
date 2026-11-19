@@ -20,14 +20,20 @@ export class LoggingInterceptor implements NestInterceptor {
 
     const method = request.method;
     const url = request.originalUrl || request.url;
+    const requestId = request.headers?.['x-request-id'];
+    const prefix = requestId ? `[${requestId}] ` : '';
     const startTime = Date.now();
+
+    this.logger.log(`${prefix}--> ${method} ${url}`);
 
     return next.handle().pipe(
       tap({
         next: () => {
           const statusCode = response.statusCode;
           const duration = Date.now() - startTime;
-          this.logger.log(`${method} ${url} ${statusCode} +${duration}ms`);
+          this.logger.log(
+            `${prefix}<-- ${method} ${url} ${statusCode} +${duration}ms`,
+          );
         },
         error: (error) => {
           const duration = Date.now() - startTime;
@@ -36,7 +42,7 @@ export class LoggingInterceptor implements NestInterceptor {
               ? error.getStatus()
               : error.status || error.statusCode || 500;
           this.logger.warn(
-            `${method} ${url} ${statusCode} +${duration}ms [Error: ${error.message || 'Unknown'}]`,
+            `${prefix}<-- ${method} ${url} ${statusCode} +${duration}ms [Error: ${error.message || 'Unknown'}]`,
           );
         },
       }),

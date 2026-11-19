@@ -92,6 +92,10 @@ export class ApplicationsService {
         manager,
       );
 
+      this.logger.log(
+        `Created application '${saved.id}' in DRAFT status for user '${user.id}'`,
+      );
+
       return saved;
     });
   }
@@ -235,6 +239,10 @@ export class ApplicationsService {
         manager,
       );
 
+      this.logger.log(
+        `Updated application '${id}' (status: ${updated.status}) by user '${user.id}'`,
+      );
+
       return updated;
     });
   }
@@ -305,6 +313,10 @@ export class ApplicationsService {
           },
         },
         manager,
+      );
+
+      this.logger.log(
+        `Application '${saved.id}' transitioned to SUBMITTED (version ${saved.submissionVersion}) by user '${user.id}'`,
       );
 
       return saved;
@@ -414,8 +426,8 @@ export class ApplicationsService {
         );
       }
 
-      // 3. Validate assigned reviewer exists and holds the REVIEWER role
-      const reviewer = await this.userRepository.findOne({
+      // 3. Validate assigned reviewer exists and holds the REVIEWER role inside transaction
+      const reviewer = await manager.findOne(User, {
         where: { id: dto.reviewerId },
       });
 
@@ -445,6 +457,10 @@ export class ApplicationsService {
           },
         },
         manager,
+      );
+
+      this.logger.log(
+        `Assigned reviewer '${reviewer.id}' to application '${saved.id}' by admin '${adminUser.id}'`,
       );
 
       return saved;
@@ -559,6 +575,10 @@ export class ApplicationsService {
           },
         },
         manager,
+      );
+
+      this.logger.log(
+        `Recorded decision '${dto.decision}' on application '${saved.id}' (new status: ${saved.status}) by reviewer '${reviewer.id}'`,
       );
 
       return saved;
