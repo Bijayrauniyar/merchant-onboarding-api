@@ -1,11 +1,16 @@
 import { applyDecorators } from '@nestjs/common';
-import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiResponse,
+  ApiTags,
+} from '@nestjs/swagger';
 
 /**
  * Controller-level Swagger documentation for Audit module.
  */
 export function ApiAuditDocs() {
-  return applyDecorators(ApiTags('Audit'));
+  return applyDecorators(ApiTags('Audit'), ApiBearerAuth());
 }
 
 /**
@@ -14,11 +19,20 @@ export function ApiAuditDocs() {
 export function ApiFindAllAuditLogsDoc() {
   return applyDecorators(
     ApiOperation({
-      summary: 'Retrieve compliance audit trail with pagination and filters',
+      summary:
+        'Retrieve compliance audit trail with pagination and filters (ADMIN only)',
     }),
     ApiResponse({
       status: 200,
       description: 'Paginated audit trail records',
+    }),
+    ApiResponse({
+      status: 401,
+      description: 'Unauthorized: Missing or invalid JWT access token',
+    }),
+    ApiResponse({
+      status: 403,
+      description: 'Forbidden: Requires ADMIN role',
     }),
   );
 }

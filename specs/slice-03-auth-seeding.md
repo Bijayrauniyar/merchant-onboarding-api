@@ -1,6 +1,6 @@
 # Slice 3 Specification: Authentication, RBAC & User Seeding
 
-> **Status:** `SPEC_REVIEW`  
+> **Status:** `COMPLETED`  
 > **Target Commit:** `feat(auth): implement jwt authentication, rbac guards and user seeding`  
 > **Relevant Architecture Sections:** [DESIGN.md Section 2.1](../DESIGN.md#2-entities--database-schema), [Section 3.1 & 3.2](../DESIGN.md#3-authentication--two-tier-authorization), [AGENTS.md Section 3](../AGENTS.md#3-mandatory-security--object-level-authorization-invariants)  
 
@@ -95,6 +95,8 @@ Implement secure authentication and role-based access control (RBAC). Issue sign
     - Failed login with non-existent user (returns 401 Unauthorized, timing-safe).
     - Protected route rejection without token (returns 401 Unauthorized).
     - Protected route rejection with invalid role (returns 403 Forbidden).
+    - Compliance audit trail route (`GET /audit-logs`) locked down: anonymous (401), sales/reviewer (403), admin (200).
+    - Real-world attack edge cases: mass assignment whitelist injection (400), malformed headers (401), signature tampering (401).
   - `README.md`: Update checklist for Slice 3.
   - `specs/slice-03-auth-seeding.md`: Mark `COMPLETED`.
 - **Commit:** `feat(auth): implement jwt authentication, rbac guards and user seeding`.
@@ -104,11 +106,11 @@ Implement secure authentication and role-based access control (RBAC). Issue sign
 ## 3. Verification & Acceptance Criteria
 
 Before marking Slice 3 as complete:
-- [ ] `User` entity has strict types, unique indexed `email`, and `passwordHash` hidden by default.
-- [ ] Migration `1700000002000-CreateUsersTable.ts` runs and reverts cleanly.
-- [ ] Bcrypt password service hashes passwords with salt factor 10.
-- [ ] `POST /auth/login` issues valid JWT containing `{ sub, email, role }`.
-- [ ] `JwtAuthGuard` blocks unauthorized requests with `401 Unauthorized`.
-- [ ] `RolesGuard` blocks insufficient roles with `403 Forbidden`.
-- [ ] Seeder creates exactly 5 deterministic users idempotently.
-- [ ] All unit and E2E integration tests pass 100% with zero failures.
+- [x] `User` entity has strict types, unique indexed `email`, and `passwordHash` hidden by default.
+- [x] Migration `1700000002000-CreateUsersTable.ts` runs and reverts cleanly.
+- [x] Bcrypt password service hashes passwords with salt factor 10.
+- [x] `POST /auth/login` issues valid JWT containing `{ sub, email, role }`.
+- [x] `JwtAuthGuard` blocks unauthorized requests with `401 Unauthorized`.
+- [x] `RolesGuard` blocks insufficient roles with `403 Forbidden`.
+- [x] Seeder creates exactly 5 deterministic users idempotently.
+- [x] All unit and E2E integration tests pass 100% with zero failures.

@@ -51,7 +51,7 @@ SALES staff create and submit merchant applications. Submitting triggers an asyn
 - [x] AI Governance & Engineering Guardrails (`AGENTS.md`)
 - [x] **Slice 1: Scaffolding & Infrastructure** (Docker Compose, NestJS core, ConfigModule, Swagger `/api/docs`, `/health`)
 - [x] **Slice 2: Database Layer & Audit Module** (TypeORM migrations, `synchronize: false`, redaction utility, `AuditLog`, `HttpExceptionFilter`, `LoggingInterceptor`)
-- [ ] **Slice 3: Authentication & User Seeding** (JWT strategy, bcrypt, seed 5 users, `POST /auth/login`, route guards)
+- [x] **Slice 3: Authentication & User Seeding** (JWT strategy, bcrypt, seed 5 users, `POST /auth/login`, route guards)
 - [ ] **Slice 4: Applications & Query Scoping** (`MerchantApplication` CRUD, Anti-IDOR scoping `createdById`, 404 tests)
 - [ ] **Slice 5: State Machine & Lifecycle** (Pure `canTransition()` validator, submit, assign, decision gating, 409 tests)
 - [ ] **Slice 6: Asynchronous Risk Review** (BullMQ + Redis, post-commit dispatch, 3-layer idempotency, 3x backoff retries)
@@ -73,13 +73,18 @@ docker compose up -d
 # 3. Install dependencies
 npm install
 
-# 4. Build application (strict TypeScript compilation)
+# 4. Run database migrations & seed deterministic test users
+npm run migration:run
+npm run seed
+
+# 5. Build application (strict TypeScript compilation)
 npm run build
 
-# 5. Run unit tests
+# 6. Run automated test suites (unit + e2e)
 npm test
+npm run test:e2e
 
-# 6. Start the development server
+# 7. Start the development server
 npm run start:dev
 
 # 7. Check service health
