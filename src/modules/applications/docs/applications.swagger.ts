@@ -5,9 +5,14 @@ import {
   ApiResponse,
   ApiTags,
   ApiParam,
+  ApiBody,
 } from '@nestjs/swagger';
 import { MerchantApplication } from '../entities/merchant-application.entity';
 import { PaginatedApplicationsResponseDto } from '../dto/paginated-applications-response.dto';
+import { CreateApplicationDto } from '../dto/create-application.dto';
+import { RecordDecisionDto } from '../dto/record-decision.dto';
+import { BusinessType } from '../enums/business-type.enum';
+import { ReviewerDecision } from '../enums/reviewer-decision.enum';
 
 /**
  * Controller-level Swagger documentation for Applications module.
@@ -24,7 +29,59 @@ export function ApiCreateApplicationDoc() {
     ApiOperation({
       summary: 'Create a new merchant onboarding application',
       description:
-        'Initializes an application in DRAFT state assigned to the calling user (SALES or ADMIN).',
+        'Initializes an application in DRAFT state assigned to the calling user (SALES or ADMIN). Select an example from the dropdown below to test different automated underwriting outcomes (PASS, FLAG, or FAIL).',
+    }),
+    ApiBody({
+      type: CreateApplicationDto,
+      description:
+        'Select a scenario from the dropdown to test different automated underwriting behaviors:',
+      examples: {
+        passScenario: {
+          summary: '1. PASS Scenario (Clean Merchant -> PASSED riskStatus)',
+          description:
+            'Standard compliant merchant. When submitted, background underwriting passes cleanly with score 85 and status PASSED.',
+          value: {
+            businessName: 'Apex Coffee Roasters',
+            legalBusinessName: 'Apex Coffee Roasters LLC',
+            businessType: BusinessType.LLC,
+            ownerName: 'Jane Doe',
+            ownerEmail: 'jane@apexcoffee.com',
+            ownerPhone: '+14155552671',
+            requestedMonthlyVolume: 85000,
+            requestedAvgTicket: 45.5,
+          },
+        },
+        flagScenario: {
+          summary: '2. FLAG Scenario (High-Risk Merchant -> FLAGGED riskStatus)',
+          description:
+            'Business name contains "RISKY". When submitted, background underwriting triggers risk factor flags, score 45, and status FLAGGED.',
+          value: {
+            businessName: 'Risky High-Roller Gaming Lounge',
+            legalBusinessName: 'Risky Gaming Enterprises Inc',
+            businessType: BusinessType.CORPORATION,
+            ownerName: 'Robert Vance',
+            ownerEmail: 'bob@riskygaming.com',
+            ownerPhone: '+14155559876',
+            requestedMonthlyVolume: 250000,
+            requestedAvgTicket: 150.0,
+          },
+        },
+        failScenario: {
+          summary: '3. FAIL Scenario (Outage / Retries Exhausted -> FAILED riskStatus)',
+          description:
+            'Business name contains "FAIL". When submitted, simulates upstream provider timeout, exhausting 3 retries and transitioning riskStatus to FAILED.',
+          value: {
+            businessName: 'FailSafe Global Logistics',
+            legalBusinessName: 'FailSafe Global Logistics LLC',
+            businessType: BusinessType.LLC,
+            ownerName: 'Frank Miller',
+            ownerEmail: 'frank@failsafelogistics.com',
+            ownerPhone: '+14155554321',
+            requestedMonthlyVolume: 50000,
+            requestedAvgTicket: 80.0,
+          },
+        },
+      },
     }),
     ApiResponse({
       status: 201,
@@ -151,7 +208,7 @@ export function ApiSubmitApplicationDoc() {
     ApiOperation({
       summary: 'Submit merchant application for risk review',
       description:
-        'Transitions application from DRAFT or INFO_REQUESTED to SUBMITTED. Increments submissionVersion and marks riskStatus as PENDING. Scoped by ownership for SALES.',
+        'Transitions application from DRAFT or INFO_REQUESTED to SUBMITTED. Increments submissionVersion, marks riskStatus as PENDING, and dispatches a background BullMQ underwriting job.',
     }),
     ApiParam({
       name: 'id',
@@ -242,6 +299,40 @@ export function ApiRecordDecisionDoc() {
       summary: 'Record official reviewer decision on an assigned application',
       description:
         'Restricted to the assigned REVIEWER. Decisions: APPROVE, REJECT (mandatory note), REQUEST_INFO (mandatory note). Strictly blocked with 409 Conflict if automated risk check is PENDING.',
+    }),
+    ApiBody({
+      type: RecordDecisionDto,
+      description:
+        'Select a decision scenario from the dropdown to test APPROVE, REJECT, or REQUEST_INFO:',
+      examples: {
+        approveScenario: {
+          summary: '1. APPROVE Decision (Approve Application -> APPROVED)',
+          description:
+            'Moves application to terminal APPROVED status. Explanatory note is optional for approvals.',
+          value: {
+            decision: ReviewerDecision.APPROVE,
+            note: 'All merchant documentation and KYB background verification verified successfully.',
+          },
+        },
+        rejectScenario: {
+          summary: '2. REJECT Decision (Decline Application -> REJECTED)',
+          description:
+            'Moves application to terminal REJECTED status. Explanatory note is mandatory (min 5 characters).',
+          value: {
+            decision: ReviewerDecision.REJECT,
+            note: 'Application declined due to high risk profile and watch list flag match.',
+          },
+        },
+        requestInfoScenario: {
+          summary: '3. REQUEST_INFO Decision (Request Clarification -> INFO_REQUESTED)',
+          description:
+            'Moves application to INFO_REQUESTED, allowing SALES to edit and resubmit. Explanatory note is mandatory (min 5 characters).',
+          value: {
+            decision: ReviewerDecision.REQUEST_INFO,
+            note: 'Please provide proof of business address (utility bill) and recent 3 months bank statements.',
+          },
+        },
+      },
     }),
     ApiParam({
       name: 'id',

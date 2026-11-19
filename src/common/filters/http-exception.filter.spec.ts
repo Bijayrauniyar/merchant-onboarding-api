@@ -68,6 +68,30 @@ describe('HttpExceptionFilter', () => {
     );
   });
 
+  it('should include structured errors dictionary when present in exception response', () => {
+    const validationErrors = ['email must be an email'];
+    const structuredErrors = { email: ['email must be an email'] };
+    const exception = new BadRequestException({
+      statusCode: 400,
+      message: validationErrors,
+      error: 'Bad Request',
+      errors: structuredErrors,
+    });
+
+    filter.catch(exception, mockHost);
+
+    expect(mockResponse.status).toHaveBeenCalledWith(HttpStatus.BAD_REQUEST);
+    expect(mockResponse.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        statusCode: HttpStatus.BAD_REQUEST,
+        path: '/test-endpoint',
+        message: validationErrors,
+        error: 'Bad Request',
+        errors: structuredErrors,
+      }),
+    );
+  });
+
   it('should sanitize raw unhandled errors to 500 without leaking stack traces or internal details', () => {
     const rawError = new Error('FATAL: password authentication failed for user postgres');
 

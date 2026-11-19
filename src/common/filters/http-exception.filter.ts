@@ -14,6 +14,7 @@ export interface ErrorResponsePayload {
   path: string;
   message: string | string[];
   error: string;
+  errors?: Record<string, string[]>;
 }
 
 @Catch()
@@ -28,6 +29,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
     let statusCode: number;
     let message: string | string[];
     let error: string;
+    let errors: Record<string, string[]> | undefined;
 
     if (exception instanceof HttpException) {
       statusCode = exception.getStatus();
@@ -37,6 +39,9 @@ export class HttpExceptionFilter implements ExceptionFilter {
         const resObj = res as Record<string, any>;
         message = resObj.message || exception.message;
         error = resObj.error || exception.name;
+        if (resObj.errors && typeof resObj.errors === 'object') {
+          errors = resObj.errors;
+        }
       } else {
         message = (res as string) || exception.message;
         error = exception.name;
@@ -59,6 +64,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
       path: request.url,
       message,
       error,
+      ...(errors ? { errors } : {}),
     };
 
     response.status(statusCode).json(payload);

@@ -82,6 +82,7 @@ export class CreateApplicationDto {
    * Estimated monthly payment processing volume (USD)
    * @example 50000.00
    */
+  @IsNotEmpty({ message: 'requestedMonthlyVolume is required' })
   @Type(() => Number)
   @IsNumber(
     { maxDecimalPlaces: 2 },
@@ -95,6 +96,7 @@ export class CreateApplicationDto {
    * Estimated average transaction ticket size (USD)
    * @example 125.50
    */
+  @IsNotEmpty({ message: 'requestedAvgTicket is required' })
   @Type(() => Number)
   @IsNumber(
     { maxDecimalPlaces: 2 },

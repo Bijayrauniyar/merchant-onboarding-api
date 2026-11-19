@@ -97,6 +97,62 @@ curl http://localhost:3000/health
 
 ---
 
+## How to Test & Verification Guide
+
+### 1. Seeded Test Personas (`Password123!` for all)
+
+| Persona | Email | Scope & Responsibilities |
+|---|---|---|
+| **`SALES`** | `sales1@example.com` | Create, edit, and submit own applications (Anti-IDOR query-scoped). |
+| **`REVIEWER`** | `reviewer1@example.com` | Review assigned applications and record decisions (`APPROVE`, `REJECT`, `REQUEST_INFO`). |
+| **`ADMIN`** | `admin@example.com` | Operational oversight, assigns reviewers, and views compliance audit trail (`GET /audit-logs`). |
+
+### 2. End-to-End Workflow in Swagger UI (`http://localhost:3000/api/docs`)
+
+All key endpoints include built-in **Examples dropdowns** so you can test complete lifecycles without writing JSON:
+
+1. **Authenticate**:
+   - Call `POST /auth/login` (select **SALES Persona** from dropdown) $\rightarrow$ copy `accessToken`.
+   - Click the green **Authorize** button at the top right, paste token, click **Authorize**.
+2. **Create Application (`POST /applications`)**:
+   - Select an underwriting scenario from the **Examples dropdown**:
+     - **`PASS Scenario`** (`Apex Coffee Roasters`) → Evaluates to score 85 and **`riskStatus: PASSED`**.
+     - **`FLAG Scenario`** (`Risky High-Roller Gaming Lounge`) → Evaluates to score 45 and **`riskStatus: FLAGGED`**.
+     - **`FAIL Scenario`** (`FailSafe Global Logistics`) → Simulates provider timeout, exhausts 3 retries, sets **`riskStatus: FAILED`**.
+   - Click **Execute** and copy the returned `id`.
+3. **Submit for Risk Review (`POST /applications/{id}/submit`)**:
+   - Paste the application `id` and click **Execute**.
+   - BullMQ processes underwriting asynchronously. Call `GET /applications/{id}` to verify the updated `riskStatus`.
+4. **Assign Reviewer (`POST /applications/{id}/assign`)**:
+   - Re-authorize as **`ADMIN`** (`admin@example.com`).
+   - Call `GET /users?role=REVIEWER` to pick a reviewer ID (e.g. `reviewer1`).
+   - Call `POST /applications/{id}/assign` with `{ "reviewerId": "<reviewer-uuid>" }`.
+5. **Record Decision (`POST /applications/{id}/decision`)**:
+   - Re-authorize as that **`REVIEWER`** (`reviewer1@example.com`).
+   - Pick a determination from the **Examples dropdown**:
+     - **`APPROVE`**: Moves application to terminal immutable `APPROVED` status.
+     - **`REJECT`**: Mandatory rationale note $\rightarrow$ moves application to terminal immutable `REJECTED` status.
+     - **`REQUEST_INFO`**: Mandatory clarification note $\rightarrow$ moves to `INFO_REQUESTED`, re-opening edit access for `SALES`.
+
+### 3. Key Security & Guardrail Invariants to Verify
+
+- **Anti-IDOR / Anti-Enumeration (`404 Not Found`)**: As `sales1`, call `GET /applications/{id}` on an application created by `sales2`. Returns **`404 Not Found`** (never leaks existence via 403).
+- **Segregation of Duties (`403 Forbidden`)**: As `ADMIN`, attempt to call `POST /applications/{id}/decision`. Returns **`403 Forbidden`** (Admins are strictly barred from recording risk decisions).
+- **Risk Gating (`409 Conflict`)**: Attempting a reviewer decision while `riskStatus == PENDING` returns **`409 Conflict`**.
+- **Audit Trail & PII Redaction (`GET /audit-logs`)**: Log in as `ADMIN` to view the append-only audit trail with contact data masking (`ownerEmail`, `ownerPhone`).
+
+### 4. Automated Test Suites
+
+```bash
+# Run 213 unit tests (state machine invariants, DTO validation, service logic)
+npm test
+
+# Run integration tests (authorization bypass, BullMQ retry exhaustion, idempotency)
+npm run test:e2e
+```
+
+---
+
 ## Assumptions & Scope Boundaries
 
 See Section 8 and Section 9 of [DESIGN.md](./DESIGN.md) for full architectural trade-offs and out-of-scope production considerations.

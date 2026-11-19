@@ -1,5 +1,5 @@
 import { NestFactory } from '@nestjs/core';
-import { ValidationPipe, Logger } from '@nestjs/common';
+import { ValidationPipe, Logger, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import helmet from 'helmet';
@@ -8,6 +8,7 @@ import { randomUUID } from 'crypto';
 import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
+import { formatValidationErrors } from './common/utils/validation-error-formatter.util';
 
 async function bootstrap() {
   const logger = new Logger('Bootstrap');
@@ -53,12 +54,21 @@ async function bootstrap() {
   // Global logging interceptor for latency and HTTP access logging
   app.useGlobalInterceptors(new LoggingInterceptor());
 
-  // Global validation pipe with strict whitelist enforcement (Anti-Mass Assignment)
+  // Global validation pipe with strict whitelist enforcement (Anti-Mass Assignment) and clean structured errors
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
       forbidNonWhitelisted: true,
       transform: true,
+      exceptionFactory: (validationErrors = []) => {
+        const { messages, errors } = formatValidationErrors(validationErrors);
+        return new BadRequestException({
+          statusCode: 400,
+          error: 'Bad Request',
+          message: messages,
+          errors,
+        });
+      },
     }),
   );
 
@@ -66,7 +76,14 @@ async function bootstrap() {
   const swaggerConfig = new DocumentBuilder()
     .setTitle('Merchant Onboarding & Risk Review API')
     .setDescription(
-      'Enterprise API for merchant onboarding with asynchronous risk review (BullMQ), role-based access control, and query-level authorization.',
+      `Enterprise API for merchant onboarding with asynchronous risk review (BullMQ), role-based access control, and query-level authorization.
+
+**Test Personas** (\`Password123!\`): \`sales1@example.com\` (SALES) | \`reviewer1@example.com\` (REVIEWER) | \`admin@example.com\` (ADMIN)
+
+**Underwriting Scenarios** (Select from endpoint **Examples dropdown**):
+- **PASS**: Clean merchant (\`Apex Coffee Roasters\`) → Evaluates to score 85, \`riskStatus: PASSED\`
+- **FLAG**: High-risk merchant (\`Risky High-Roller Gaming Lounge\`) → Evaluates to score 45, \`riskStatus: FLAGGED\`
+- **FAIL**: Outage merchant (\`FailSafe Global Logistics\`) → Simulates vendor timeout, retries exhaust, \`riskStatus: FAILED\``,
     )
     .setVersion('1.0.0')
     .addBearerAuth(
