@@ -55,7 +55,7 @@ SALES staff create and submit merchant applications. Submitting triggers an asyn
 - [x] **Slice 4: Applications & Query Scoping** (`MerchantApplication` CRUD, Anti-IDOR scoping `createdById`, 404 tests)
 - [x] **Slice 5: State Machine & Lifecycle** (Pure `canTransition()` validator, submit, assign, decision gating, 409 tests)
 - [x] **Slice 6: Asynchronous Risk Review** (BullMQ + Redis, post-commit dispatch, 3-layer idempotency, 3x backoff retries, pessimistic write locks, queue failure recovery)
-- [ ] **Slice 7: Production Hardening & Final Verification** (Centralized exception filters, full test suite pass, zero-secrets audit)
+- [x] **Slice 7: Production Hardening & Final Verification** (Centralized exception filters, full test suite pass, zero-secrets audit)
 
 ---
 
