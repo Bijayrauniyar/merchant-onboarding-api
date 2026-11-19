@@ -30,7 +30,7 @@ The platform architecture consists of the following core technologies:
 Unique constraint: `(applicationId, submissionVersion)`
 
 **AuditLog**
-`id (uuid)`, `entityName`, `entityId (uuid)`, `action`, `actorId (nullable, null = system/worker)`, `actorRole`, `metadata (jsonb, redacted)`, `createdAt`
+`id (uuid)`, `entityName`, `entityId (uuid)`, `action`, `actorId (varchar(100), 'system' for automated worker/recovery events)`, `actorRole (SYSTEM for worker)`, `metadata (jsonb, redacted)`, `createdAt`
 
 Indexes: `MerchantApplication(createdById)`, `(assignedReviewerId)`, `(status)`; `AuditLog(entityName, entityId)`, `(actorId)`, `(createdAt)`.
 
@@ -243,21 +243,23 @@ sequenceDiagram
     Client->>Guards: PATCH /applications/:id (Bearer JWT, updateDto)
     Guards->>AppCtrl: forward request
     AppCtrl->>AppSvc: update(id, updateDto, user)
-    AppSvc->>DB: findOne with scoped query (by id & createdById if SALES)
+    AppSvc->>DB: Begin Transaction
+    AppSvc->>DB: SELECT * FROM merchant_applications WHERE id = :id FOR UPDATE (pessimistic_write)
     
-    alt Record not found
+    alt Record not found or outside caller scope
         DB-->>AppSvc: null
+        AppSvc->>DB: Rollback
         AppSvc-->>Client: 404 Not Found
-    else Record exists
-        DB-->>AppSvc: MerchantApplication
+    else Record locked
+        DB-->>AppSvc: locked MerchantApplication
         AppSvc->>StateMachine: isEditable(application.status)
         alt status NOT IN ('DRAFT', 'INFO_REQUESTED')
             StateMachine-->>AppSvc: false
+            AppSvc->>DB: Rollback
             AppSvc-->>Client: 409 Conflict ("Application is locked for updates")
         else status is DRAFT or INFO_REQUESTED
             StateMachine-->>AppSvc: true
-            AppSvc->>DB: Begin Transaction
-            AppSvc->>DB: UPDATE merchant_applications SET ... WHERE id = :id
+            AppSvc->>DB: UPDATE merchant_applications SET (only modified fields) WHERE id = :id
             AppSvc->>Audit: record(APPLICATION_UPDATED, appId, user.id, diff)
             Audit->>DB: INSERT INTO audit_logs (redacted changes)
             AppSvc->>DB: Commit Transaction
@@ -285,23 +287,28 @@ sequenceDiagram
     else Caller is ADMIN
         Guards->>AppCtrl: forward request
         AppCtrl->>AppSvc: assignReviewer(id, reviewerId, adminUser)
-        AppSvc->>DB: findOne(MerchantApplication, id)
+        AppSvc->>DB: Begin Transaction
+        AppSvc->>DB: SELECT * FROM merchant_applications WHERE id = :id FOR UPDATE (pessimistic_write)
         
         alt Application not found
+            AppSvc->>DB: Rollback
             AppSvc-->>Client: 404 Not Found
         else status != 'SUBMITTED'
+            AppSvc->>DB: Rollback
             AppSvc-->>Client: 409 Conflict ("Application must be in SUBMITTED state to assign")
-        else Target user is not REVIEWER
+        else Validate Reviewer
             AppSvc->>DB: findOne(User, reviewerId)
-            AppSvc-->>Client: 400 Bad Request ("Assigned user must hold REVIEWER role")
-        else Valid assignment
-            AppSvc->>DB: Begin Transaction
-            AppSvc->>DB: UPDATE merchant_applications SET assignedReviewerId = :reviewerId WHERE id = :id
-            AppSvc->>Audit: record(REVIEWER_ASSIGNED, id, adminUser.id, { reviewerId })
-            Audit->>DB: INSERT INTO audit_logs
-            AppSvc->>DB: Commit Transaction
-            AppSvc-->>AppCtrl: Updated Application
-            AppCtrl-->>Client: 200 OK { assignedReviewerId: reviewerId, ... }
+            alt Target user is not REVIEWER
+                AppSvc->>DB: Rollback
+                AppSvc-->>Client: 400 Bad Request ("Assigned user must hold REVIEWER role")
+            else Valid assignment
+                AppSvc->>DB: UPDATE merchant_applications SET assignedReviewerId = :reviewerId WHERE id = :id
+                AppSvc->>Audit: record(REVIEWER_ASSIGNED, id, adminUser.id, { reviewerId })
+                Audit->>DB: INSERT INTO audit_logs
+                AppSvc->>DB: Commit Transaction
+                AppSvc-->>AppCtrl: Updated Application
+                AppCtrl-->>Client: 200 OK { assignedReviewerId: reviewerId, ... }
+            end
         end
     end
 ```
@@ -324,21 +331,25 @@ sequenceDiagram
     else Caller is REVIEWER
         Guards->>AppCtrl: forward request (reviewer user)
         AppCtrl->>AppSvc: recordDecision(id, decisionDto, reviewer)
-        AppSvc->>DB: SELECT * FROM merchant_applications WHERE id = :id AND assignedReviewerId = :reviewer.id
+        AppSvc->>DB: Begin Transaction
+        AppSvc->>DB: SELECT * FROM merchant_applications WHERE id = :id AND assignedReviewerId = :reviewer.id FOR UPDATE (pessimistic_write)
         
         alt Record not found (not assigned to this reviewer)
             DB-->>AppSvc: null
+            AppSvc->>DB: Rollback
             AppSvc-->>Client: 404 Not Found
-        else Record found
-            note over AppSvc: Enforce decision invariants
+        else Record locked
+            note over AppSvc: Enforce decision invariants on locked row
             alt status != 'SUBMITTED'
+                AppSvc->>DB: Rollback
                 AppSvc-->>Client: 409 Conflict ("Can only decide on SUBMITTED applications")
             else riskStatus == 'PENDING'
+                AppSvc->>DB: Rollback
                 AppSvc-->>Client: 409 Conflict ("Risk check still in progress. Decision gated until completed.")
             else decision IN ('REJECT', 'REQUEST_INFO') AND note is empty
+                AppSvc->>DB: Rollback
                 AppSvc-->>Client: 400 Bad Request ("Note is required for reject or request_info")
             else Invariants satisfied
-                AppSvc->>DB: Begin Transaction
                 alt decision == 'APPROVE'
                     AppSvc->>DB: UPDATE merchant_applications SET status = 'APPROVED', decidedAt = NOW(), decisionNote = :note
                 else decision == 'REJECT'
@@ -362,24 +373,26 @@ sequenceDiagram
 - **Decoupled Execution**: Verification against external risk/KYB providers is decoupled from the synchronous HTTP request cycle. `POST /applications/:id/submit` updates the database status to `SUBMITTED`, enqueues a background job to Redis, and returns `200 OK` immediately.
 - **Queue Configuration**:
   - Queue Name: `risk-evaluation`
+  - Job Name: `risk-evaluation`
   - Connection: Redis (port `6379`) configured via `BullModule`
   - Producer Job Options:
     - `jobId: risk:{applicationId}:{submissionVersion}` (Deterministic deduplication key in Redis)
     - `attempts: 3` (Maximum retry attempts)
     - `backoff: { type: 'exponential', delay: 2000 }` (Exponential retries at 2s, 4s, 8s)
     - `removeOnComplete: true`, `removeOnFail: false` (Retains failed jobs for inspection)
-- **Post-Commit Enqueueing**: Jobs are dispatched to Redis strictly after the PostgreSQL transaction commits, preventing race conditions where workers query uncommitted application state.
-- **Three-Layer Idempotency**:
+- **Post-Commit Enqueueing & Enqueue Failure Recovery**: Jobs are dispatched to Redis strictly after the PostgreSQL transaction commits, preventing race conditions where workers query uncommitted application state. If queue dispatch fails (e.g. Redis outage), a secondary guarded update marks `riskStatus = FAILED`, records a `RISK_REVIEW_FAILED` audit row (`reason: 'ENQUEUE_FAILED'`), and throws `503 ServiceUnavailableException`.
+- **Three-Layer Idempotency & Lost-Update Protection**:
   - **Queue Layer (Redis)**: Deterministic `jobId`. Duplicate job submissions with identical application ID and version are dropped by Redis.
-  - **Database Layer (TypeORM)**: Unique composite constraint on `RiskReview(applicationId, submissionVersion)` prevents duplicate rows.
-  - **Worker Layer**: Pre-check skips processing if `app.submissionVersion != job.submissionVersion` (stale job) or if a `RiskReview` record already exists.
+  - **Database Layer (TypeORM)**: Unique composite constraint on `RiskReview(applicationId, submissionVersion)` prevents duplicate rows. PostgreSQL unique constraint collisions (`23505`) are absorbed gracefully.
+  - **Worker Layer & Guarded Updates**: Pre-checks skip processing if `app.submissionVersion != job.submissionVersion` (stale job) or if a `RiskReview` record already exists. Inside the transaction, the worker executes a **guarded update first** (`WHERE id = :id AND status = 'SUBMITTED' AND risk_status = 'PENDING' AND submission_version = :v`).
+  - **Lost-Update Invariant**: The worker updates **strictly** `risk_status`, never saving a stale in-memory entity. This guarantees that if an `ADMIN` assigns `assignedReviewerId` while the KYB screening is running, the worker will never wipe or overwrite the reviewer assignment.
 
 ### 5.2 End-to-End Processing Steps
-1. `POST /applications/:id/submit` executes inside a database transaction (`status = SUBMITTED`, `riskStatus = PENDING`, `submissionVersion += 1`, and audit log). After commit, the BullMQ job is enqueued to Redis.
-2. The worker (`RiskReviewWorker`) picks up the job and performs idempotency skip checks.
+1. `POST /applications/:id/submit` acquires a row-level write lock (`pessimistic_write`) inside a database transaction (`status = SUBMITTED`, `riskStatus = PENDING`, `submissionVersion += 1`, and audit log). After commit, the BullMQ job is enqueued to Redis. If Redis is unreachable, recovery updates `riskStatus = FAILED` and returns 503.
+2. The worker (`RiskProcessor`) picks up the job and performs idempotency skip checks.
 3. The worker invokes the simulated KYB provider (deterministic: name containing `FAIL` throws, containing `RISKY` returns `FLAGGED`, clean names return `PASSED`).
-4. In one database transaction: inserts `RiskReview`, updates `MerchantApplication.riskStatus`, and writes an audit log (`actorId = null` for system).
-5. Retries: If the provider throws, Redis manages exponential retries. Upon 3rd exhaustion, the worker sets `riskStatus = FAILED` and writes a failure audit record.
+4. In one database transaction: runs guarded update to `riskStatus`, inserts `RiskReview`, and writes an audit log (`actorId = 'system'`, `actorRole = 'SYSTEM'`).
+5. Retries: If the provider throws, Redis manages exponential retries. Upon 3rd exhaustion, the worker executes a guarded update setting `riskStatus = FAILED` (`WHERE status = 'SUBMITTED' AND risk_status = 'PENDING' AND submission_version = :v`) and writes a `RISK_REVIEW_FAILED` audit record.
 
 ### 5.3 Application Submission Flow (`POST /applications/:id/submit`)
 ```mermaid
@@ -396,21 +409,30 @@ sequenceDiagram
     Client->>Guards: POST /applications/:id/submit (Bearer JWT)
     Guards->>AppCtrl: forward request
     AppCtrl->>AppSvc: submit(id, user)
-    AppSvc->>DB: findOne with scoped query
+    AppSvc->>DB: Begin Transaction
+    AppSvc->>DB: SELECT * FROM merchant_applications WHERE id = :id FOR UPDATE (pessimistic_write)
     
     alt Status NOT IN ('DRAFT', 'INFO_REQUESTED')
+        AppSvc->>DB: Rollback
         AppSvc-->>Client: 409 Conflict ("Cannot submit in current state")
     else Valid submission state
-        AppSvc->>DB: Begin Transaction
         AppSvc->>DB: UPDATE merchant_applications SET status = 'SUBMITTED', riskStatus = 'PENDING', submissionVersion = submissionVersion + 1 WHERE id = :id
         AppSvc->>Audit: record(APPLICATION_SUBMITTED, appId, user.id)
         Audit->>DB: INSERT INTO audit_logs
         AppSvc->>DB: Commit Transaction
         
-        note over AppSvc,Queue: Job dispatched AFTER database commit
-        AppSvc->>Queue: add("risk-review", { applicationId, submissionVersion }, jobId: "risk:{id}:{version}")
-        AppSvc-->>AppCtrl: Submitted Application
-        AppCtrl-->>Client: 200 OK { status: "SUBMITTED", riskStatus: "PENDING", ... }
+        note over AppSvc,Queue: Job dispatched strictly AFTER database commit
+        alt Enqueue succeeds
+            AppSvc->>Queue: add("risk-evaluation", { applicationId, submissionVersion }, jobId: "risk:{id}:{v}")
+            AppSvc-->>AppCtrl: Submitted Application
+            AppCtrl-->>Client: 200 OK { status: "SUBMITTED", riskStatus: "PENDING", ... }
+        else Enqueue fails (Redis down)
+            AppSvc->>DB: Begin Recovery Transaction
+            AppSvc->>DB: UPDATE merchant_applications SET riskStatus = 'FAILED' WHERE id = :id AND status = 'SUBMITTED' AND riskStatus = 'PENDING' AND submissionVersion = :v
+            AppSvc->>Audit: record(RISK_REVIEW_FAILED, appId, 'system', metadata: { reason: 'ENQUEUE_FAILED' })
+            AppSvc->>DB: Commit Recovery Transaction
+            AppSvc-->>Client: 503 Service Unavailable ("Application submitted, but the risk check could not be queued. It has been marked FAILED for manual review.")
+        end
     end
 ```
 
@@ -419,7 +441,7 @@ sequenceDiagram
 sequenceDiagram
     autonumber
     participant Queue as BullMQ (Redis)
-    participant Worker as RiskReviewWorker
+    participant Worker as RiskProcessor
     participant KYB as Simulated KYB Provider
     participant Audit as AuditService
     participant DB as PostgreSQL (TypeORM)
@@ -442,22 +464,22 @@ sequenceDiagram
                 KYB-->>Worker: throw Network/Provider Error
                 Worker-->>Queue: Job fails -> BullMQ triggers retry with exponential backoff
                 note over Worker,Queue: On final (3rd) retry exhaustion:
-                Worker->>DB: UPDATE merchant_applications SET riskStatus = 'FAILED'
-                Worker->>Audit: record(RISK_REVIEW_FAILED, appId, null)
+                Worker->>DB: UPDATE merchant_applications SET riskStatus = 'FAILED' WHERE id = :id AND status = 'SUBMITTED' AND riskStatus = 'PENDING' AND submissionVersion = :v
+                Worker->>Audit: record(RISK_REVIEW_FAILED, appId, 'system', { reason, attempts, submissionVersion })
             else Business name contains 'RISKY'
                 KYB-->>Worker: { result: "FLAGGED", score: 45, rawResponse: {...} }
                 Worker->>DB: Begin Transaction
+                Worker->>DB: UPDATE merchant_applications SET riskStatus = 'FLAGGED' WHERE id = :id AND status = 'SUBMITTED' AND riskStatus = 'PENDING' AND submissionVersion = :v
                 Worker->>DB: INSERT INTO risk_reviews (applicationId, submissionVersion, result: "FLAGGED", score: 45)
-                Worker->>DB: UPDATE merchant_applications SET riskStatus = "FLAGGED"
-                Worker->>Audit: record(RISK_REVIEW_COMPLETED, appId, null)
+                Worker->>Audit: record(RISK_REVIEW_COMPLETED, appId, 'system')
                 Worker->>DB: Commit Transaction
                 Worker-->>Queue: acknowledge job success
             else Standard Business Name
                 KYB-->>Worker: { result: "PASSED", score: 85, rawResponse: {...} }
                 Worker->>DB: Begin Transaction
+                Worker->>DB: UPDATE merchant_applications SET riskStatus = 'PASSED' WHERE id = :id AND status = 'SUBMITTED' AND riskStatus = 'PENDING' AND submissionVersion = :v
                 Worker->>DB: INSERT INTO risk_reviews (applicationId, submissionVersion, result: "PASSED", score: 85)
-                Worker->>DB: UPDATE merchant_applications SET riskStatus = "PASSED"
-                Worker->>Audit: record(RISK_REVIEW_COMPLETED, appId, null)
+                Worker->>Audit: record(RISK_REVIEW_COMPLETED, appId, 'system')
                 Worker->>DB: Commit Transaction
                 Worker-->>Queue: acknowledge job success
             end

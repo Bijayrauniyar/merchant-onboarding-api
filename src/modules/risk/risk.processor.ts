@@ -95,8 +95,35 @@ export class RiskProcessor extends WorkerHost {
 
       // Persist review and update application state inside an atomic transaction
       await this.dataSource.transaction(async (manager) => {
+        // 1. Guarded update FIRST: only proceed if row is SUBMITTED, PENDING, and matching version
+        const targetRiskStatus =
+          kybResult.result === RiskResult.FLAGGED
+            ? RiskStatus.FLAGGED
+            : RiskStatus.PASSED;
+
+        const updateResult = await manager.update(
+          MerchantApplication,
+          {
+            id: applicationId,
+            status: ApplicationStatus.SUBMITTED,
+            riskStatus: RiskStatus.PENDING,
+            submissionVersion,
+          },
+          {
+            riskStatus: targetRiskStatus,
+          },
+        );
+
+        if (!updateResult.affected || updateResult.affected === 0) {
+          this.logger.warn(
+            `Job '${job.id}' skipped: Guarded update affected 0 rows for application '${applicationId}' (version ${submissionVersion}). State or version may have changed.`,
+          );
+          return;
+        }
+
+        // 2. Insert RiskReview (if unique constraint fails, transaction rolls back update too)
         const riskReview = manager.create(RiskReview, {
-          applicationId: application.id,
+          applicationId,
           submissionVersion,
           result: kybResult.result,
           score: kybResult.score,
@@ -104,16 +131,11 @@ export class RiskProcessor extends WorkerHost {
         });
         await manager.save(RiskReview, riskReview);
 
-        application.riskStatus =
-          kybResult.result === RiskResult.FLAGGED
-            ? RiskStatus.FLAGGED
-            : RiskStatus.PASSED;
-        await manager.save(MerchantApplication, application);
-
+        // 3. Atomically record audit log
         await this.auditService.log(
           {
             entityName: 'MerchantApplication',
-            entityId: application.id,
+            entityId: applicationId,
             action: 'RISK_REVIEW_COMPLETED',
             actorId: 'system',
             actorRole: 'SYSTEM',
@@ -157,57 +179,74 @@ export class RiskProcessor extends WorkerHost {
   async onFailed(job: Job<RiskJobData> | undefined, error: Error): Promise<void> {
     if (!job) return;
 
-    const maxAttempts = job.opts?.attempts ?? 3;
-    if (job.attemptsMade >= maxAttempts) {
-      this.logger.warn(
-        `Job '${job.id}' exhausted all ${maxAttempts} retry attempts. Transitioning application '${job.data.applicationId}' riskStatus to FAILED.`,
-      );
-      await this.handleFailureExhaustion(
-        job.data.applicationId,
-        error?.message || 'External KYB provider failure',
-        job.attemptsMade,
+    try {
+      const maxAttempts = job.opts?.attempts ?? 3;
+      if (job.attemptsMade >= maxAttempts) {
+        this.logger.warn(
+          `Job '${job.id}' exhausted all ${maxAttempts} retry attempts. Transitioning application '${job.data.applicationId}' riskStatus to FAILED.`,
+        );
+        await this.handleFailureExhaustion(
+          job.data.applicationId,
+          job.data.submissionVersion,
+          error?.message || 'External KYB provider failure',
+          job.attemptsMade,
+        );
+      }
+    } catch (listenerError: any) {
+      this.logger.error(
+        `Error in onFailed worker event listener for job '${job.id}': ${listenerError?.message}`,
+        listenerError?.stack,
       );
     }
   }
 
   /**
-   * Executes atomic database transition moving application riskStatus to FAILED
+   * Executes atomic guarded database transition moving application riskStatus to FAILED
    * and records a RISK_REVIEW_FAILED audit entry.
    *
    * @param applicationId Merchant application identifier
+   * @param submissionVersion Submission version associated with the failed job
    * @param reason Failure message or error description
    * @param attempts Total retry attempts made prior to exhaustion
    */
   async handleFailureExhaustion(
     applicationId: string,
+    submissionVersion: number,
     reason: string,
     attempts: number,
   ): Promise<void> {
     await this.dataSource.transaction(async (manager) => {
-      const application = await manager.findOne(MerchantApplication, {
-        where: { id: applicationId },
-      });
+      const updateResult = await manager.update(
+        MerchantApplication,
+        {
+          id: applicationId,
+          status: ApplicationStatus.SUBMITTED,
+          riskStatus: RiskStatus.PENDING,
+          submissionVersion,
+        },
+        {
+          riskStatus: RiskStatus.FAILED,
+        },
+      );
 
-      if (!application) {
-        this.logger.error(
-          `Cannot mark application '${applicationId}' as FAILED: Record not found.`,
+      if (!updateResult.affected || updateResult.affected === 0) {
+        this.logger.warn(
+          `Retry exhaustion handler skipped for application '${applicationId}': Guarded update affected 0 rows (status not SUBMITTED, riskStatus not PENDING, or version mismatch).`,
         );
         return;
       }
 
-      application.riskStatus = RiskStatus.FAILED;
-      await manager.save(MerchantApplication, application);
-
       await this.auditService.log(
         {
           entityName: 'MerchantApplication',
-          entityId: application.id,
+          entityId: applicationId,
           action: 'RISK_REVIEW_FAILED',
           actorId: 'system',
           actorRole: 'SYSTEM',
           metadata: {
             reason,
             attempts,
+            submissionVersion,
           },
         },
         manager,

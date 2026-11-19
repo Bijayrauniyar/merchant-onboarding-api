@@ -64,7 +64,7 @@ describe('RiskProcessor', () => {
         const mockManager = {
           create: jest.fn((_, entity) => entity),
           save: jest.fn(async (_, entity) => entity),
-          findOne: jest.fn().mockResolvedValue({ ...mockApp }),
+          update: jest.fn().mockResolvedValue({ affected: 1 }),
         };
         return cb(mockManager);
       }),
@@ -128,13 +128,14 @@ describe('RiskProcessor', () => {
         rawResponse: { provider: 'SIMULATED_KYB', status: 'FLAGGED' },
       });
 
-      let savedApp: any;
+      let updatedData: any;
       dataSource.transaction = jest.fn(async (cb: any) => {
         const mockManager = {
           create: jest.fn((_, entity) => entity),
-          save: jest.fn(async (entityClass, entity) => {
-            if (entityClass === MerchantApplication) savedApp = entity;
-            return entity;
+          save: jest.fn(async (_, entity) => entity),
+          update: jest.fn(async (entityClass, criteria, partialEntity) => {
+            if (entityClass === MerchantApplication) updatedData = partialEntity;
+            return { affected: 1 };
           }),
         };
         return cb(mockManager);
@@ -142,7 +143,27 @@ describe('RiskProcessor', () => {
 
       await processor.process(mockJob);
 
-      expect(savedApp.riskStatus).toBe(RiskStatus.FLAGGED);
+      expect(updatedData.riskStatus).toBe(RiskStatus.FLAGGED);
+    });
+
+    it('should skip inserting RiskReview or audit if guarded update in process() affects 0 rows', async () => {
+      let savedRiskReview: any = null;
+      dataSource.transaction = jest.fn(async (cb: any) => {
+        const mockManager = {
+          create: jest.fn((_, entity) => entity),
+          save: jest.fn(async (entityClass, entity) => {
+            if (entityClass === RiskReview) savedRiskReview = entity;
+            return entity;
+          }),
+          update: jest.fn().mockResolvedValue({ affected: 0 }),
+        };
+        return cb(mockManager);
+      });
+
+      await processor.process(mockJob);
+
+      expect(savedRiskReview).toBeNull();
+      expect(auditService.log).not.toHaveBeenCalled();
     });
   });
 
@@ -219,13 +240,16 @@ describe('RiskProcessor', () => {
         opts: { attempts: 3 },
       } as unknown as Job<RiskJobData>;
 
-      let savedApp: any;
+      let updateCriteria: any;
+      let updateValues: any;
       dataSource.transaction = jest.fn(async (cb: any) => {
         const mockManager = {
-          findOne: jest.fn().mockResolvedValue({ ...mockApp }),
-          save: jest.fn(async (entityClass, entity) => {
-            if (entityClass === MerchantApplication) savedApp = entity;
-            return entity;
+          update: jest.fn(async (entityClass, criteria, partialEntity) => {
+            if (entityClass === MerchantApplication) {
+              updateCriteria = criteria;
+              updateValues = partialEntity;
+            }
+            return { affected: 1 };
           }),
         };
         return cb(mockManager);
@@ -233,7 +257,15 @@ describe('RiskProcessor', () => {
 
       await processor.onFailed(exhaustedJob, new Error('KYB Provider Timeout'));
 
-      expect(savedApp.riskStatus).toBe(RiskStatus.FAILED);
+      expect(updateCriteria).toEqual({
+        id: mockApp.id,
+        status: ApplicationStatus.SUBMITTED,
+        riskStatus: RiskStatus.PENDING,
+        submissionVersion: 1,
+      });
+      expect(updateValues).toEqual({
+        riskStatus: RiskStatus.FAILED,
+      });
       expect(auditService.log).toHaveBeenCalledWith(
         expect.objectContaining({
           action: 'RISK_REVIEW_FAILED',
@@ -243,10 +275,44 @@ describe('RiskProcessor', () => {
           metadata: expect.objectContaining({
             reason: 'KYB Provider Timeout',
             attempts: 3,
+            submissionVersion: 1,
           }),
         }),
         expect.anything(),
       );
+    });
+
+    it('should skip audit log in handleFailureExhaustion if guarded update affects 0 rows', async () => {
+      const exhaustedJob = {
+        ...mockJob,
+        attemptsMade: 3,
+        opts: { attempts: 3 },
+      } as unknown as Job<RiskJobData>;
+
+      dataSource.transaction = jest.fn(async (cb: any) => {
+        const mockManager = {
+          update: jest.fn().mockResolvedValue({ affected: 0 }),
+        };
+        return cb(mockManager);
+      });
+
+      await processor.onFailed(exhaustedJob, new Error('KYB Provider Timeout'));
+
+      expect(auditService.log).not.toHaveBeenCalled();
+    });
+
+    it('should safely catch and log if handleFailureExhaustion throws inside onFailed()', async () => {
+      const exhaustedJob = {
+        ...mockJob,
+        attemptsMade: 3,
+        opts: { attempts: 3 },
+      } as unknown as Job<RiskJobData>;
+
+      dataSource.transaction = jest.fn().mockRejectedValue(new Error('DB failure'));
+
+      await expect(
+        processor.onFailed(exhaustedJob, new Error('KYB Provider Timeout')),
+      ).resolves.not.toThrow();
     });
 
     it('should not transition to FAILED if retry attempts have not been exhausted', async () => {

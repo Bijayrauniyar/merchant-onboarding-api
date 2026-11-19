@@ -1,9 +1,11 @@
 import {
   Injectable,
+  Logger,
   NotFoundException,
   ConflictException,
   ForbiddenException,
   BadRequestException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository, SelectQueryBuilder } from 'typeorm';
@@ -35,6 +37,8 @@ import { UserRole } from '../users/enums/user-role.enum';
  */
 @Injectable()
 export class ApplicationsService {
+  private readonly logger = new Logger(ApplicationsService.name);
+
   constructor(
     @InjectRepository(MerchantApplication)
     private readonly applicationRepository: Repository<MerchantApplication>,
@@ -155,7 +159,9 @@ export class ApplicationsService {
   /**
    * Updates an application in DRAFT or INFO_REQUESTED status.
    *
-   * Invariants:
+   * Invariants & Concurrency:
+   * - Enforces row-level write lock (pessimistic_write) inside transaction to prevent concurrent update/submit races.
+   * - Re-evaluates isEditable status rule on the fresh locked entity.
    * - Scoped by caller ownership (404 if outside scope).
    * - Blocked with 409 Conflict if application is in SUBMITTED, APPROVED, or REJECTED.
    * - Atomically saves changes and writes an audit log diff.
@@ -172,30 +178,46 @@ export class ApplicationsService {
       );
     }
 
-    const application = await this.findOne(id, user);
-
-    // Lifecycle Invariant: Editability check
-    if (!isEditable(application.status)) {
-      throw new ConflictException(
-        `Application cannot be updated in status '${application.status}'. Updates are only permitted in DRAFT or INFO_REQUESTED status.`,
-      );
-    }
-
-    // Calculate changed fields for audit diff
-    const changes: Record<string, { from: any; to: any }> = {};
-    for (const [key, value] of Object.entries(dto)) {
-      if (value !== undefined && (application as any)[key] !== value) {
-        changes[key] = { from: (application as any)[key], to: value };
-      }
-    }
-
-    // If no values changed, return existing entity
-    if (Object.keys(changes).length === 0) {
-      return application;
-    }
-
     return this.dataSource.transaction(async (manager) => {
-      Object.assign(application, dto);
+      // 1. Fetch with row-level write lock inside transaction
+      const qb = manager
+        .createQueryBuilder(MerchantApplication, 'app')
+        .setLock('pessimistic_write')
+        .where('app.id = :id', { id });
+
+      this.applyAuthorizationScope(qb, user);
+
+      const application = await qb.getOne();
+
+      if (!application) {
+        throw new NotFoundException(`Application with ID ${id} not found`);
+      }
+
+      // 2. Lifecycle Invariant: Editability check on the locked row
+      if (!isEditable(application.status)) {
+        throw new ConflictException(
+          `Application cannot be updated in status '${application.status}'. Updates are only permitted in DRAFT or INFO_REQUESTED status.`,
+        );
+      }
+
+      // 3. Calculate changed fields for audit diff against the locked entity
+      const changes: Record<string, { from: any; to: any }> = {};
+      const fieldsToUpdate: Partial<MerchantApplication> = {};
+
+      for (const [key, value] of Object.entries(dto)) {
+        if (value !== undefined && (application as any)[key] !== value) {
+          changes[key] = { from: (application as any)[key], to: value };
+          (fieldsToUpdate as any)[key] = value;
+        }
+      }
+
+      // If no values changed, return the locked entity without writing audit row
+      if (Object.keys(changes).length === 0) {
+        return application;
+      }
+
+      // 4. Update only modified fields on the locked entity
+      Object.assign(application, fieldsToUpdate);
       const updated = await manager.save(MerchantApplication, application);
 
       await this.auditService.log(
@@ -220,38 +242,52 @@ export class ApplicationsService {
   /**
    * Submits an application for review.
    *
-   * Lifecycle Invariant:
-   * - Permitted only in DRAFT (Action: SUBMIT) or INFO_REQUESTED (Action: RESUBMIT) status.
-   * - Locked states (SUBMITTED, APPROVED, REJECTED) throw 409 Conflict.
-   * - Enforces ownership scoping (404 Not Found if outside caller scope).
-   * - Increments submissionVersion monotonically and sets riskStatus to PENDING.
-   * - Records APPLICATION_SUBMITTED audit log atomically inside the transaction.
+   * Lifecycle & Concurrency Invariants:
+   * - Enforces row-level write lock (pessimistic_write) inside the transaction to prevent concurrent submit races.
+   * - Re-checks canTransition on the locked row inside the transaction.
+   * - Updates only the targeted columns on the locked entity.
+   * - Dispatches background risk check job strictly post-commit.
+   * - On enqueue failure: executes guarded rollback update to FAILED, records audit entry, and raises 503.
    */
   async submit(
     id: string,
     user: AuthenticatedUser,
   ): Promise<MerchantApplication> {
-    const application = await this.findOne(id, user);
-
-    const action =
-      application.status === ApplicationStatus.INFO_REQUESTED
-        ? ApplicationAction.RESUBMIT
-        : ApplicationAction.SUBMIT;
-
-    if (!canTransition(application.status, action)) {
-      throw new ConflictException(
-        `Application cannot be submitted in status '${application.status}'. Submission is only permitted in DRAFT or INFO_REQUESTED status.`,
-      );
-    }
-
-    const previousStatus = application.status;
-    const nextStatus = getNextStatus(application.status, action);
-
     const submitted = await this.dataSource.transaction(async (manager) => {
+      // 1. Fetch with row-level write lock inside transaction (anti-race condition)
+      const qb = manager
+        .createQueryBuilder(MerchantApplication, 'app')
+        .setLock('pessimistic_write')
+        .where('app.id = :id', { id });
+
+      this.applyAuthorizationScope(qb, user);
+
+      const application = await qb.getOne();
+
+      if (!application) {
+        throw new NotFoundException(`Application with ID ${id} not found`);
+      }
+
+      // 2. Validate transition on the locked row
+      const action =
+        application.status === ApplicationStatus.INFO_REQUESTED
+          ? ApplicationAction.RESUBMIT
+          : ApplicationAction.SUBMIT;
+
+      if (!canTransition(application.status, action)) {
+        throw new ConflictException(
+          `Application cannot be submitted in status '${application.status}'. Submission is only permitted in DRAFT or INFO_REQUESTED status.`,
+        );
+      }
+
+      const previousStatus = application.status;
+      const nextStatus = getNextStatus(application.status, action);
+
       application.status = nextStatus;
       application.riskStatus = RiskStatus.PENDING;
       application.submissionVersion += 1;
 
+      // 3. Save targeted columns on the locked entity
       const saved = await manager.save(MerchantApplication, application);
 
       await this.auditService.log(
@@ -274,11 +310,62 @@ export class ApplicationsService {
       return saved;
     });
 
-    // Post-Commit Enqueueing: job is dispatched strictly AFTER database commit
-    await this.riskProducer.enqueueRiskReview(
-      submitted.id,
-      submitted.submissionVersion,
-    );
+    // 4. Post-Commit Enqueueing with failure recovery
+    try {
+      await this.riskProducer.enqueueRiskReview(
+        submitted.id,
+        submitted.submissionVersion,
+      );
+    } catch (enqueueError: any) {
+      this.logger.error(
+        `Failed to enqueue risk review for application '${submitted.id}': ${enqueueError?.message}`,
+        enqueueError?.stack,
+      );
+
+      // Attempt recovery transaction, catching any secondary DB failure so 503 is still returned
+      try {
+        await this.dataSource.transaction(async (manager) => {
+          const updateResult = await manager.update(
+            MerchantApplication,
+            {
+              id: submitted.id,
+              status: ApplicationStatus.SUBMITTED,
+              riskStatus: RiskStatus.PENDING,
+              submissionVersion: submitted.submissionVersion,
+            },
+            {
+              riskStatus: RiskStatus.FAILED,
+            },
+          );
+
+          if (updateResult.affected && updateResult.affected > 0) {
+            await this.auditService.log(
+              {
+                entityName: 'MerchantApplication',
+                entityId: submitted.id,
+                action: 'RISK_REVIEW_FAILED',
+                actorId: 'system',
+                actorRole: 'SYSTEM',
+                metadata: {
+                  reason: 'ENQUEUE_FAILED',
+                  error: enqueueError?.message,
+                },
+              },
+              manager,
+            );
+          }
+        });
+      } catch (recoveryError: any) {
+        this.logger.error(
+          `Failed to execute recovery transaction for application '${submitted.id}': ${recoveryError?.message}`,
+          recoveryError?.stack,
+        );
+      }
+
+      throw new ServiceUnavailableException(
+        'Application submitted, but the risk check could not be queued. It has been marked FAILED for manual review.',
+      );
+    }
 
     return submitted;
   }
@@ -286,10 +373,11 @@ export class ApplicationsService {
   /**
    * Assigns a designated reviewer to an application in SUBMITTED status.
    *
-   * Invariants:
+   * Invariants & Concurrency:
    * - Restricted to ADMIN users (route guard + defense in depth).
+   * - Enforces row-level write lock (pessimistic_write) inside transaction.
    * - Target application must exist (404 Not Found if missing).
-   * - Target application must be in SUBMITTED status (409 Conflict if not).
+   * - Target application must be in SUBMITTED status on locked row (409 Conflict if not).
    * - Target user must exist and hold the REVIEWER role (400 Bad Request if not).
    * - Atomically updates assignedReviewerId and writes a REVIEWER_ASSIGNED audit log.
    */
@@ -304,29 +392,43 @@ export class ApplicationsService {
       );
     }
 
-    const application = await this.findOne(id, adminUser);
-
-    if (application.status !== ApplicationStatus.SUBMITTED) {
-      throw new ConflictException(
-        `Application must be in SUBMITTED status to assign a reviewer. Current status: '${application.status}'.`,
-      );
-    }
-
-    const reviewer = await this.userRepository.findOne({
-      where: { id: dto.reviewerId },
-    });
-
-    if (!reviewer || reviewer.role !== UserRole.REVIEWER) {
-      throw new BadRequestException(
-        `Assigned user with ID '${dto.reviewerId}' does not exist or does not hold the REVIEWER role.`,
-      );
-    }
-
-    const previousReviewerId = application.assignedReviewerId;
-
     return this.dataSource.transaction(async (manager) => {
+      // 1. Fetch with row-level write lock inside transaction
+      const qb = manager
+        .createQueryBuilder(MerchantApplication, 'app')
+        .setLock('pessimistic_write')
+        .where('app.id = :id', { id });
+
+      this.applyAuthorizationScope(qb, adminUser);
+
+      const application = await qb.getOne();
+
+      if (!application) {
+        throw new NotFoundException(`Application with ID ${id} not found`);
+      }
+
+      // 2. Validate status on the locked row
+      if (application.status !== ApplicationStatus.SUBMITTED) {
+        throw new ConflictException(
+          `Application must be in SUBMITTED status to assign a reviewer. Current status: '${application.status}'.`,
+        );
+      }
+
+      // 3. Validate assigned reviewer exists and holds the REVIEWER role
+      const reviewer = await this.userRepository.findOne({
+        where: { id: dto.reviewerId },
+      });
+
+      if (!reviewer || reviewer.role !== UserRole.REVIEWER) {
+        throw new BadRequestException(
+          `Assigned user with ID '${dto.reviewerId}' does not exist or does not hold the REVIEWER role.`,
+        );
+      }
+
+      const previousReviewerId = application.assignedReviewerId;
       application.assignedReviewerId = reviewer.id;
 
+      // 4. Save only changed column on the locked entity
       const saved = await manager.save(MerchantApplication, application);
 
       await this.auditService.log(
@@ -352,13 +454,14 @@ export class ApplicationsService {
   /**
    * Records an official determination (APPROVE, REJECT, REQUEST_INFO) by the assigned reviewer.
    *
-   * Invariants & Security:
+   * Invariants & Concurrency:
    * - Restricted to the assigned REVIEWER.
+   * - Enforces row-level write lock (pessimistic_write) inside transaction (prevents concurrent decision races).
    * - Anti-enumeration: If application doesn't exist or is not assigned to this reviewer,
-   *   findOne throws 404 Not Found (never leaks resource existence via 403).
+   *   locked query returns null -> 404 Not Found (never leaks resource existence via 403).
    * - Defense-in-depth: If non-reviewer calls service directly, throws 403 Forbidden.
-   * - Status gating: Application must be in SUBMITTED status (409 Conflict if not).
-   * - Risk gating: Strictly blocked with 409 Conflict if riskStatus is PENDING.
+   * - Status gating on locked row: Application must be in SUBMITTED status (409 Conflict if not).
+   * - Risk gating on locked row: Strictly blocked with 409 Conflict if riskStatus is PENDING.
    * - Note validation: Mandatory for REJECT and REQUEST_INFO (min 5 chars), optional for APPROVE.
    * - Atomic transition: State updated, decidedAt set if terminal, DECISION_RECORDED audit log emitted in transaction.
    */
@@ -373,33 +476,6 @@ export class ApplicationsService {
       );
     }
 
-    const application = await this.findOne(id, reviewer);
-
-    if (application.status !== ApplicationStatus.SUBMITTED) {
-      throw new ConflictException(
-        `Application must be in SUBMITTED status to record a decision. Current status: '${application.status}'.`,
-      );
-    }
-
-    if (application.riskStatus === RiskStatus.PENDING) {
-      throw new ConflictException(
-        'Automated risk review is still in progress. Reviewer decisions are gated until completion.',
-      );
-    }
-
-    const actionMap: Record<ReviewerDecision, ApplicationAction> = {
-      [ReviewerDecision.APPROVE]: ApplicationAction.APPROVE,
-      [ReviewerDecision.REJECT]: ApplicationAction.REJECT,
-      [ReviewerDecision.REQUEST_INFO]: ApplicationAction.REQUEST_INFO,
-    };
-
-    const action = actionMap[dto.decision];
-    if (!canTransition(application.status, action)) {
-      throw new ConflictException(
-        `Cannot perform decision '${dto.decision}' on application in status '${application.status}'.`,
-      );
-    }
-
     if (
       dto.decision !== ReviewerDecision.APPROVE &&
       (!dto.note || dto.note.trim().length < 5)
@@ -409,10 +485,53 @@ export class ApplicationsService {
       );
     }
 
-    const nextStatus = getNextStatus(application.status, action);
-    const previousStatus = application.status;
+    const actionMap: Record<ReviewerDecision, ApplicationAction> = {
+      [ReviewerDecision.APPROVE]: ApplicationAction.APPROVE,
+      [ReviewerDecision.REJECT]: ApplicationAction.REJECT,
+      [ReviewerDecision.REQUEST_INFO]: ApplicationAction.REQUEST_INFO,
+    };
+    const action = actionMap[dto.decision];
 
     return this.dataSource.transaction(async (manager) => {
+      // 1. Fetch with row-level write lock inside transaction (anti-race condition)
+      const qb = manager
+        .createQueryBuilder(MerchantApplication, 'app')
+        .setLock('pessimistic_write')
+        .where('app.id = :id', { id });
+
+      this.applyAuthorizationScope(qb, reviewer);
+
+      const application = await qb.getOne();
+
+      if (!application) {
+        throw new NotFoundException(`Application with ID ${id} not found`);
+      }
+
+      // 2. Re-check status gating on the locked row
+      if (application.status !== ApplicationStatus.SUBMITTED) {
+        throw new ConflictException(
+          `Application must be in SUBMITTED status to record a decision. Current status: '${application.status}'.`,
+        );
+      }
+
+      // 3. Re-check risk status gating on the locked row
+      if (application.riskStatus === RiskStatus.PENDING) {
+        throw new ConflictException(
+          'Automated risk review is still in progress. Reviewer decisions are gated until completion.',
+        );
+      }
+
+      // 4. Validate transition on the locked row
+      if (!canTransition(application.status, action)) {
+        throw new ConflictException(
+          `Cannot perform decision '${dto.decision}' on application in status '${application.status}'.`,
+        );
+      }
+
+      const previousStatus = application.status;
+      const nextStatus = getNextStatus(application.status, action);
+
+      // 5. Update only decision-related columns on the locked entity
       application.status = nextStatus;
       application.decisionNote = dto.note || null;
       application.decidedAt =

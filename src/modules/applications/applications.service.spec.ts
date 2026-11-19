@@ -6,6 +6,7 @@ import {
   ConflictException,
   ForbiddenException,
   BadRequestException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { ApplicationsService } from './applications.service';
 import { MerchantApplication } from './entities/merchant-application.entity';
@@ -75,6 +76,7 @@ describe('ApplicationsService', () => {
       orderBy: jest.fn().mockReturnThis(),
       skip: jest.fn().mockReturnThis(),
       take: jest.fn().mockReturnThis(),
+      setLock: jest.fn().mockReturnThis(),
       getOne: jest.fn(),
       getManyAndCount: jest.fn(),
     };
@@ -103,6 +105,8 @@ describe('ApplicationsService', () => {
         const mockManager = {
           create: jest.fn((entityClass, data) => ({ ...data, id: 'app-123' })),
           save: jest.fn(async (entityClass, entity) => entity),
+          update: jest.fn().mockResolvedValue({ affected: 1 }),
+          createQueryBuilder: jest.fn(() => mockQueryBuilder),
         };
         return cb(mockManager);
       }),
@@ -333,7 +337,7 @@ describe('ApplicationsService', () => {
       ).rejects.toThrow(NotFoundException);
     });
 
-    it('should return existing application without transaction if no fields actually changed', async () => {
+    it('should return existing application without saving or emitting audit log if no fields actually changed', async () => {
       mockQueryBuilder.getOne.mockResolvedValue(mockApplication);
 
       const result = await service.update(
@@ -343,7 +347,7 @@ describe('ApplicationsService', () => {
       );
 
       expect(result).toEqual(mockApplication);
-      expect(dataSource.transaction).not.toHaveBeenCalled();
+      expect(auditService.log).not.toHaveBeenCalled();
     });
   });
 
@@ -407,7 +411,9 @@ describe('ApplicationsService', () => {
       dataSource.transaction.mockImplementation(async (cb: any) => {
         executionOrder.push('transaction_begin');
         const res = await cb({
+          createQueryBuilder: jest.fn(() => mockQueryBuilder),
           save: jest.fn().mockImplementation((_, entity) => entity),
+          update: jest.fn().mockResolvedValue({ affected: 1 }),
         });
         executionOrder.push('transaction_committed');
         return res;
@@ -424,6 +430,68 @@ describe('ApplicationsService', () => {
         'transaction_committed',
         'job_enqueued',
       ]);
+    });
+
+    it('should transition riskStatus to FAILED, record RISK_REVIEW_FAILED audit row, and throw ServiceUnavailableException (503) if enqueue fails', async () => {
+      mockQueryBuilder.getOne.mockResolvedValue({
+        ...mockApplication,
+        status: ApplicationStatus.DRAFT,
+        submissionVersion: 0,
+        riskStatus: RiskStatus.NOT_STARTED,
+      });
+
+      riskProducer.enqueueRiskReview.mockRejectedValue(
+        new Error('Redis connection refused'),
+      );
+
+      await expect(service.submit('app-123', salesUser)).rejects.toThrow(
+        new ServiceUnavailableException(
+          'Application submitted, but the risk check could not be queued. It has been marked FAILED for manual review.',
+        ),
+      );
+
+      expect(auditService.log).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'RISK_REVIEW_FAILED',
+          entityId: 'app-123',
+          actorId: 'system',
+          actorRole: 'SYSTEM',
+          metadata: expect.objectContaining({
+            reason: 'ENQUEUE_FAILED',
+          }),
+        }),
+        expect.anything(),
+      );
+    });
+
+    it('should still throw ServiceUnavailableException (503) if the recovery transaction itself fails', async () => {
+      mockQueryBuilder.getOne.mockResolvedValue({
+        ...mockApplication,
+        status: ApplicationStatus.DRAFT,
+        submissionVersion: 0,
+        riskStatus: RiskStatus.NOT_STARTED,
+      });
+
+      riskProducer.enqueueRiskReview.mockRejectedValue(
+        new Error('Redis connection refused'),
+      );
+
+      // First transaction succeeds (submit), second transaction (recovery) throws
+      dataSource.transaction
+        .mockImplementationOnce(async (cb: any) => {
+          return cb({
+            save: jest.fn(async (_, e) => e),
+            update: jest.fn().mockResolvedValue({ affected: 1 }),
+            createQueryBuilder: jest.fn(() => mockQueryBuilder),
+          });
+        })
+        .mockRejectedValueOnce(new Error('Database offline'));
+
+      await expect(service.submit('app-123', salesUser)).rejects.toThrow(
+        new ServiceUnavailableException(
+          'Application submitted, but the risk check could not be queued. It has been marked FAILED for manual review.',
+        ),
+      );
     });
 
     it('should throw ConflictException (409) when attempting to submit an already SUBMITTED application', async () => {
