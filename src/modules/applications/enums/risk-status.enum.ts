@@ -1,0 +1,7 @@
+export enum RiskStatus {
+  NOT_STARTED = 'NOT_STARTED',
+  PENDING = 'PENDING',
+  PASSED = 'PASSED',
+  FLAGGED = 'FLAGGED',
+  FAILED = 'FAILED',
+}
