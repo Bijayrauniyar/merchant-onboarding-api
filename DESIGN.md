@@ -89,6 +89,31 @@ sequenceDiagram
     end
 ```
 
+### 3.4 User Directory Flow (`GET /users`)
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Admin as Admin Client
+    participant Ctrl as UsersController
+    participant Guard as RolesGuard
+    participant Svc as UsersService
+    participant DB as PostgreSQL (users table)
+
+    Admin->>Ctrl: GET /users?role=REVIEWER (Bearer JWT)
+    Ctrl->>Guard: Verify JWT role == ADMIN
+    alt Non-Admin caller (e.g. SALES or REVIEWER)
+        Guard-->>Admin: 403 Forbidden
+    else Admin authenticated
+        Guard-->>Ctrl: Allow
+        Ctrl->>Svc: findAll(UserRole.REVIEWER)
+        Svc->>DB: find({ where: { role: 'REVIEWER' }, order: { email: 'ASC' } })
+        DB-->>Svc: User[] (passwordHash omitted by entity select: false)
+        Svc->>Svc: Map to UserResponseDto[] (id, email, role, createdAt)
+        Svc-->>Ctrl: UserResponseDto[]
+        Ctrl-->>Admin: 200 OK [ { id, email, role, createdAt }, ... ]
+    end
+```
+
 ## 4. Status model and Lifecycle State Machine
 
 The system separates **Business Workflow (`status`)** from **Automated Background Verification (`riskStatus`)**. Keeping them orthogonal ensures async checks never corrupt human decision states, and vice versa.
